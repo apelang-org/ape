@@ -7,5 +7,8 @@ assert __name__ == "__main__"
 
 def abs(x: int) -> int: return -x if x < 0 else x
 
+with abs2 = nonlocal abs:
+  assert abs2(-6) == abs(-6)
+
 assert abs(5) == 5
 assert abs(-7) == 7

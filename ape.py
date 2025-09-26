@@ -240,6 +240,8 @@ class Code_Literal(Code):
 @dataclass
 class Code_Variable(Code):
   name: str
+  raised: bool = False
+  disable_implicit_call: bool = False
 @dataclass
 class Code_Declaration(Code):
   names: list[str]
@@ -368,6 +370,14 @@ class Parser:
       self.eat(ord('('))
       result = self.parse_expression()
       self.eat(ord(')'))
+    elif self.peek().kind == TokenKind.KEYWORD_nonlocal:
+      token = self.eat(TokenKind.KEYWORD_nonlocal)
+      name = self.eat(TokenKind.IDENTIFIER)
+      result = Code_Variable(token.location, self.p, name.as_str(self.s), disable_implicit_call=True)
+    elif self.peek().kind == TokenKind.KEYWORD_raise:
+      token = self.eat(TokenKind.KEYWORD_raise)
+      name = self.eat(TokenKind.IDENTIFIER)
+      result = Code_Variable(token.location, self.p, name.as_str(self.s), raised=True, disable_implicit_call=True)
     elif self.peek().kind in [ord('-'), ord('~'), TokenKind.KEYWORD_not]:
       token = self.eat(self.peek().kind)
       right = self.parse_leaf()
@@ -619,7 +629,7 @@ def code_as_string(code: Code, level: int = 0) -> str:
     elif isinstance(code.value, bool | int | float | None): return str(code.value)
     else: return f"{'"""' if code.is_thick else '"'}{code.value}{'"""' if code.is_thick else '"'}"
   elif isinstance(code, Code_Variable):
-    return f"{code.name}"
+    return f"{"nonlocal " if not code.raised and code.disable_implicit_call else ""}{"raise " if code.raised else ""}{code.name}"
   elif isinstance(code, Code_Declaration):
     result = f"{", ".join(code.names)}"
     if code.type_expr: result += f": {code_as_string(code.type_expr, level)}"
@@ -627,6 +637,9 @@ def code_as_string(code: Code, level: int = 0) -> str:
     return result
   elif isinstance(code, Code_Procedure):
     return f"def {code.name}{f"[{", ".join(code_as_string(constant, level) for constant in code.constants)}]" if len(code.constants) else ""}{"[" if code.brackets else "("}{", ".join(code_as_string(param, level) for param in code.params)}{"]" if code.brackets else ")"}{f" -> {code_as_string(code.return_type, level)}" if code.return_type else ""}:\n{"\n".join("  " * (level + 1) + code_as_string(child, level + 1) for child in code.body)}"
+  elif isinstance(code, Code_UnaryOp):
+    wrap = isinstance(code.right, Code_BinaryOp | Code_IfExpression)
+    return f"{opstr[code.op]}{" " if code.op == TokenKind.KEYWORD_not else ""}{"(" if wrap else ""}{code_as_string(code.right, level)}{")" if wrap else ""}"
   elif isinstance(code, Code_BinaryOp):
     left_wrap = isinstance(code.left, Code_BinaryOp) and Parser.PRECEDENCES[code.left.op] < Parser.PRECEDENCES[code.op]
     right_wrap = isinstance(code.right, Code_BinaryOp) and Parser.PRECEDENCES[code.right.op] < Parser.PRECEDENCES[code.op]
@@ -634,6 +647,10 @@ def code_as_string(code: Code, level: int = 0) -> str:
     result += f" {opstr[code.op]} "
     result += f"{"(" if right_wrap else ""}{code_as_string(code.right, level)}{")" if right_wrap else ""}"
     return result
+  elif isinstance(code, Code_IfExpression):
+    cond_wrap = isinstance(code.cond, Code_IfExpression)
+    conseq_wrap = isinstance(code.conseq, Code_IfExpression)
+    return f"{"(" if conseq_wrap else ""}{code_as_string(code.conseq, level)}{")" if conseq_wrap else ""} if {"(" if cond_wrap else ""}{code_as_string(code.cond, level)}{")" if cond_wrap else ""} else {code_as_string(code.alt, level)}"
   elif isinstance(code, Code_Call):
     return f"{code_as_string(code.expr, level)}({", ".join(code_as_string(arg, level) for arg in code.args)})"
   elif isinstance(code, Code_SubscriptOrCall):
@@ -644,6 +661,8 @@ def code_as_string(code: Code, level: int = 0) -> str:
     return f"assert {code_as_string(code.cond, level)}{f", {code_as_string(code.message, level)}" if code.message else ""}"
   elif isinstance(code, Code_With):
     return f"with{f" {", ".join(f"{name} = {code_as_string(expr, level)}" for name, expr in zip(code.names, code.exprs))}" if len(code.exprs) else ""}{f" {"," if len(code.exprs) > 0 else ""}{code.block_name}" if code.block_name else ""}:\n{"\n".join("  " * (level + 1) + code_as_string(child, level + 1) for child in code.body)}"
+  elif isinstance(code, Code_Return):
+    return f"return {", ".join(code_as_string(expr, level) for expr in code.exprs)}"
   elif isinstance(code, Code_Pass):
     return "pass"
   else:
@@ -688,6 +707,8 @@ class Value:
         for child in self.body:
           result = kwargs["evaluator"](child, procedure_scope)
           if hasattr(result, "$return"): delattr(result, "$return"); return result
+        if kwargs["ty"].return_type != type_void:
+          raise Evaluator.Error(f"Procedure did not return a value!", kwargs["op_code"])
         return value_void
 
   class ProcedureSet:
@@ -704,6 +725,10 @@ class Value:
   @property
   def as_code(self) -> Code:
     if self.ty != type_code or not isinstance(self.contents, Code): raise TypeError()
+    return self.contents
+  @property
+  def as_tuple(self) -> tuple["Value", ...]:
+    if self.ty != type_tuple or not isinstance(self.contents, tuple): raise TypeError()
     return self.contents
   @property
   def as_procedure_set(self) -> ProcedureSet:
@@ -796,7 +821,7 @@ class Evaluator:
     proc = proc_set.procedures[0]
     pargs = [self(arg, scope, False) for arg in arg_codes]
     if len(pargs) == 0: raise Evaluator.Error("TYPECHECK!!!", op_code)
-    return proc.as_procedure(*pargs, evaluator=self, op_code=op_code, arg_codes=arg_codes)
+    return proc.as_procedure(*pargs, ty=proc.ty, evaluator=self, op_code=op_code, arg_codes=arg_codes)
 
   def __call__(self, code: Code, scope: Scope, disable_implicit_call: bool = False) -> Value:
     if isinstance(code, Code_Module):
@@ -815,7 +840,7 @@ class Evaluator:
     elif isinstance(code, Code_Variable):
       value = scope.find(code.name)
       if value is None: raise Evaluator.Error("Not in scope!", code)
-      if not disable_implicit_call and value.ty == type_procedure_set:
+      if not code.disable_implicit_call and not disable_implicit_call and value.ty == type_procedure_set:
         value = self.call(scope, value, code, [])
       return value
     elif isinstance(code, Code_Declaration):
@@ -903,8 +928,10 @@ class Evaluator:
         # TODO(dfra): *Should* this ignore duplicates like __name__? Obviously this won't work for procedure sets...
         scope.entries.update({k: v for k,v in evaluator.global_scope.entries.items() if k not in code.excludes and k not in scope.entries})
       return value_void
+    elif isinstance(code, Code_Pass):
+      return value_void
     elif isinstance(code, Code_Return):
-      value = Value(type_tuple, tuple(self(expr, scope) for expr in code.exprs)) if len(code.exprs) > 1 else (self(code.exprs[0], scope) if len(code.exprs) > 0 else value_void)
+      value = Value(type_tuple, tuple(self(expr, scope, disable_implicit_call) for expr in code.exprs)) if len(code.exprs) > 1 else (self(code.exprs[0], scope) if len(code.exprs) > 0 else value_void)
       setattr(value, "$return", True)
       return value
     elif isinstance(code, Code_Assert):
@@ -913,6 +940,13 @@ class Evaluator:
       if code.message: raise NotImplementedError()
       if not cond:
         raise Evaluator.Error("Assertion failed!", code.cond)
+      return value_void
+    elif isinstance(code, Code_With):
+      with_scope = Scope(scope)
+      for name, value in zip(code.names, code.exprs):
+        with_scope.entries.update({name: self(value, with_scope, disable_implicit_call)})
+      for child in code.body:
+        self(child, with_scope, disable_implicit_call)
       return value_void
     else:
       raise NotImplementedError(code.__class__.__name__)
@@ -925,7 +959,7 @@ def dofile(path: Path, name: str | None = None) -> None:
   evaluator = Evaluator(src)
   try:
     module = parser.parse_Module(name)
-    # print(code_as_string(module))
+    print(code_as_string(module))
     evaluator(module, evaluator.global_scope)
   except TokenizerError as e:
     traceback.print_exc()
