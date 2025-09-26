@@ -266,6 +266,11 @@ class Code_BinaryOp(Code):
   op: int
   right: Code
 @dataclass
+class Code_Compare(Code):
+  left: Code
+  ops: list[int]
+  conds: list[Code]
+@dataclass
 class Code_IfExpression(Code):
   conseq: Code
   cond: Code
@@ -312,10 +317,10 @@ class Parser:
       self.message = message
       self.token = token
 
+  COMPARES: list[int] = [TokenKind.EQEQ, TokenKind.BANGEQ, TokenKind.LTEQ, TokenKind.GTEQ, ord('<'), ord('>'), TokenKind.KEYWORD_in]
   PRECEDENCES: dict[int, int] = {
     TokenKind.KEYWORD_or: 0,
     TokenKind.KEYWORD_and: 1,
-    TokenKind.EQEQ: 2, TokenKind.BANGEQ: 2, TokenKind.LTEQ: 2, TokenKind.GTEQ: 2, ord('<'): 2, ord('>'): 2, TokenKind.KEYWORD_in: 2,
     ord('|'): 3,
     ord('^'): 4,
     ord('&'): 5,
@@ -437,6 +442,13 @@ class Parser:
       op = self.eat(self.peek().kind)
       right = self.parse_expression(min_prec)
       left = Code_BinaryOp(start, self.p, left, op.kind, right)
+    if self.peek().kind in Parser.COMPARES:
+      ops: list[int] = []
+      conds: list[Code] = []
+      while self.peek().kind in Parser.COMPARES:
+        ops.append(self.eat(self.peek().kind).kind)
+        conds.append(self.parse_leaf())
+      left = Code_Compare(left.start_location, self.p, left, ops, conds)
     if min_prec == -1:
       while True:
         if self.peek().kind == TokenKind.KEYWORD_if:
@@ -647,6 +659,11 @@ def code_as_string(code: Code, level: int = 0) -> str:
     result += f" {opstr[code.op]} "
     result += f"{"(" if right_wrap else ""}{code_as_string(code.right, level)}{")" if right_wrap else ""}"
     return result
+  elif isinstance(code, Code_Compare):
+    result = f"{code_as_string(code.left, level)}"
+    for op, cond in zip(code.ops, code.conds):
+      result += f" {opstr[op]} {code_as_string(cond, level)}"
+    return result
   elif isinstance(code, Code_IfExpression):
     cond_wrap = isinstance(code.cond, Code_IfExpression)
     conseq_wrap = isinstance(code.conseq, Code_IfExpression)
@@ -670,6 +687,8 @@ def code_as_string(code: Code, level: int = 0) -> str:
 
 @dataclass(frozen=True)
 class Type: pass
+@dataclass(frozen=True)
+class VariableType(Type): name: str
 @dataclass(frozen=True)
 class NamedType(Type): name: str
 @dataclass(frozen=True)
@@ -697,7 +716,8 @@ type_procedure_set = NamedType("procedure_set")
 @dataclass
 class Value:
   class Procedure:
-    def __init__(self, body: typing.Callable[..., "Value"] | list[Code], constant_names: list[str], parameter_names: list[str], defaults: dict[str, "Value"], brackets: bool) -> None:
+    def __init__(self, name: str, body: typing.Callable[..., "Value"] | list[Code], constant_names: list[str], parameter_names: list[str], defaults: dict[str, "Value"], brackets: bool) -> None:
+      self.name = name
       self.body = body
       self.constant_names = constant_names
       self.parameter_names = parameter_names
@@ -799,10 +819,14 @@ def compiler_type(kind_value: Value, **kwargs: typing.Any) -> Value:
   if kind == "procedure_set": return Value(type_type, type_procedure_set)
   raise Evaluator.Error(f"I could not find a type that goes by the name {kind}.", kwargs["arg_codes"][0])
 
+def compiler_type_of(value: Value, **kwargs: typing.Any) -> Value:
+  return Value(type_type, value.ty)
+
 compiler_scope = Scope(None)
 compiler_scope.entries.update({
   "type": Value(type_procedure_set, Value.ProcedureSet([
-    Value(ProcedureType([type_enum_literal], type_procedure_set), Value.Procedure(compiler_type, [], ["kind"], {"kind": Value(type_enum_literal, "type")}, True)),
+    Value(ProcedureType([type_enum_literal], type_procedure_set), Value.Procedure("type", compiler_type, [], ["kind"], {"kind": Value(type_enum_literal, "type")}, True)),
+    Value(ProcedureType([VariableType("T")], type_type), Value.Procedure("type", compiler_type_of, ["T"], ["value"], {}, False))
   ])),
 })
 
@@ -821,11 +845,22 @@ class Evaluator:
     if isinstance(ty, NamedType): return f"type[.{ty.name}]"
     raise NotImplementedError(ty.__class__.__name__)
 
-  def call(self, scope: Scope, expr: Value, op_code: Code, arg_codes: list[Code]) -> Value:
+  def coerce(self, value: Value, ty: Type) -> Value | None:
+    if value.ty == ty or isinstance(ty, VariableType): return value
+    return None
+
+  def call(self, scope: Scope, expr: Value, op_code: Code, arg_codes: list[Code], explicit_brackets: bool = False, explicit_parentheses: bool = False) -> Value:
     try: proc_set = expr.as_procedure_set
     except TypeError: raise Evaluator.Error("Attempted to call non-procedure.", op_code)
-    proc_value = proc_set.procedures[0]
+    def sort(proc: Value):
+      if explicit_brackets and proc.as_procedure.brackets: return -1
+      if explicit_parentheses and not proc.as_procedure.brackets: return -1
+      return 1
+    choices = sorted(proc_set.procedures, key=sort)
+    proc_value = choices[0]
     proc = proc_value.as_procedure
+    if explicit_brackets and not proc.brackets: raise Evaluator.Error(f"No overload of {proc.name}[].", op_code)
+    if explicit_parentheses and proc.brackets: raise Evaluator.Error(f"No overload of {proc.name}().", op_code)
     assert isinstance(proc_value.ty, ProcedureType)
     posargs: list[Value] = [value_void] * len(proc_value.ty.parameter_types)
     namedargs: dict[str, Value] = {}
@@ -839,21 +874,22 @@ class Evaluator:
         arg_value = self(arg.exprs[0], scope)
         if name in proc.parameter_names:
           index = proc.parameter_names.index(name)
-          if arg_value.ty != proc_value.ty.parameter_types[index]:
+          arg_value = self.coerce(arg_value, proc_value.ty.parameter_types[index])
+          if arg_value is None:
             raise Evaluator.Error(f"type mismatch", arg_codes[index])
           posargs[index] = arg_value
           posargi = index + 1
         else:
           namedargs[name] = arg_value
       else:
-        arg_value = self(arg, scope)
-        if arg_value.ty != proc_value.ty.parameter_types[posargi]:
+        arg_value = self.coerce(self(arg, scope), proc_value.ty.parameter_types[posargi])
+        if arg_value is None:
           raise Evaluator.Error(f"type mismatch", arg_codes[posargi])
         posargs[posargi] = arg_value
         posargi += 1
     while posargi < len(proc.parameter_names) and proc.parameter_names[posargi] in proc.defaults:
-      arg_value = proc.defaults[proc.parameter_names[posargi]]
-      if arg_value.ty != proc_value.ty.parameter_types[posargi]:
+      arg_value = self.coerce(proc.defaults[proc.parameter_names[posargi]], proc_value.ty.parameter_types[posargi])
+      if arg_value is None:
         raise Evaluator.Error(f"type mismatch", arg_codes[posargi])
       posargs[posargi] = arg_value
       posargi += 1
@@ -905,7 +941,7 @@ class Evaluator:
         try: return_type = self(code.return_type, scope, disable_implicit_call).as_type
         except TypeError: raise Evaluator.Error(f"Return type expression is not a type!", code.return_type)
       _ = return_type
-      proc = Value(ProcedureType(parameter_types, return_type, is_macro=code.is_macro), Value.Procedure(code.body, constant_names, parameter_names, defaults, code.brackets))
+      proc = Value(ProcedureType(parameter_types, return_type, is_macro=code.is_macro), Value.Procedure(code.name, code.body, constant_names, parameter_names, defaults, code.brackets))
       value = scope.find(code.name)
       if value and value.ty == type_procedure_set:
         value.as_procedure_set.procedures.append(proc)
@@ -929,24 +965,36 @@ class Evaluator:
         if code.op == ord('*'): return Value(type_int, left.as_int * right.as_int)
         if code.op == TokenKind.SLASHSLASH: return Value(type_int, left.as_int // right.as_int)
         if code.op == ord('%'): return Value(type_int, left.as_int % right.as_int)
-        if code.op == TokenKind.EQEQ: return value_true if left.as_int == right.as_int else value_false
-        if code.op == TokenKind.BANGEQ: return value_true if left.as_int != right.as_int else value_false
-        if code.op == TokenKind.LTEQ: return value_true if left.as_int <= right.as_int else value_false
-        if code.op == TokenKind.GTEQ: return value_true if left.as_int >= right.as_int else value_false
-        if code.op == ord('<'): return value_true if left.as_int < right.as_int else value_false
-        if code.op == ord('>'): return value_true if left.as_int > right.as_int else value_false
-      if left.ty == type_str and right.ty == type_str:
-        if code.op == TokenKind.EQEQ: return value_true if left.as_str == right.as_str else value_false
-        if code.op == TokenKind.BANGEQ: return value_true if left.as_str != right.as_str else value_false
-      if left.ty == type_type and right.ty == type_type:
-        if code.op == TokenKind.EQEQ: return value_true if left.as_type == right.as_type else value_false
-        if code.op == TokenKind.BANGEQ: return value_true if left.as_type != right.as_type else value_false
       raise Evaluator.Error(f"Binary operator {opstr[code.op]} is not defined between {self.type_as_string(left.ty)} and {self.type_as_string(right.ty)}!", code)
+    elif isinstance(code, Code_Compare):
+      result = True
+      left = self(code.left, scope)
+      for op, cond in zip(code.ops, code.conds):
+        cond = self(cond, scope)
+        if left.ty == type_int and cond.ty == type_int:
+          if op == TokenKind.EQEQ: result = result and left.as_int == cond.as_int
+          elif op == TokenKind.BANGEQ: result = result and left.as_int != cond.as_int
+          elif op == TokenKind.LTEQ: result = result and left.as_int <= cond.as_int
+          elif op == TokenKind.GTEQ: result = result and left.as_int >= cond.as_int
+          elif op == ord('<'): result = result and left.as_int < cond.as_int
+          elif op == ord('>'): result = result and left.as_int > cond.as_int
+          else: raise Evaluator.Error(f"Comparison operator {opstr[op]} not defined between {self.type_as_string(left.ty)} and {self.type_as_string(cond.ty)}", code)
+        elif left.ty == type_type and cond.ty == type_type:
+          if op == TokenKind.EQEQ: result = result and left.as_type == cond.as_type
+          elif op == TokenKind.BANGEQ: result = result and left.as_type != cond.as_type
+          else: raise Evaluator.Error(f"Comparison operator {opstr[op]} not defined between {self.type_as_string(left.ty)} and {self.type_as_string(cond.ty)}", code)
+        elif left.ty == type_str and cond.ty == type_str:
+          if op == TokenKind.EQEQ: result = result and left.as_str == cond.as_str
+          elif op == TokenKind.BANGEQ: result = result and left.as_str != cond.as_str
+          else: raise Evaluator.Error(f"Comparison operator {opstr[op]} not defined between {self.type_as_string(left.ty)} and {self.type_as_string(cond.ty)}", code)
+        else: raise Evaluator.Error(f"Comparion operator {opstr[op]} not defined between {self.type_as_string(left.ty)} and {self.type_as_string(cond.ty)}", code)
+        left = cond
+      return value_true if result else value_false
     elif isinstance(code, Code_Call):
-      return self.call(scope, self(code.expr, scope, True), code.expr, code.args)
+      return self.call(scope, self(code.expr, scope, True), code.expr, code.args, explicit_parentheses=True)
     elif isinstance(code, Code_SubscriptOrCall):
       expr = self(code.expr, scope, True)
-      if expr.ty == type_procedure_set: return self.call(scope, expr, code.expr, code.exprs)
+      if expr.ty == type_procedure_set: return self.call(scope, expr, code.expr, code.exprs, explicit_brackets=True)
       else:
         assert len(code.exprs) == 1
         # key = self(code.exprs[0], scope)

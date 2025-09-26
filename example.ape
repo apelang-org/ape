@@ -4,6 +4,7 @@ assert __name__ == "__main__"
 
 assert type == type[.type]
 assert bool != type
+assert type(bool) == type == type[.type]
 
 def abs(x: int) -> int: return -x if x < 0 else x
 
