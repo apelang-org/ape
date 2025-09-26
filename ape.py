@@ -938,7 +938,7 @@ def dofile(path: Path, name: str | None = None) -> None:
   except Evaluator.Error as e:
     traceback.print_exc()
     line, col = offset_to_line_col(src, e.code.start_location)
-    print(f"parse error @ {path}:{line}:{col} near '{code_as_string(e.code)}': {e.message}")
+    print(f"evaluation error @ {path}:{line}:{col} near '{code_as_string(e.code)}': {e.message}")
 
 def repl() -> None:
   src = ""
@@ -962,7 +962,7 @@ def repl() -> None:
       print(f"parse error @ repl:{line}:{col} near '{e.token.as_str(src)}': {e.message}")
     except Evaluator.Error as e:
       line, col = offset_to_line_col(src, e.code.start_location)
-      print(f"parse error @ repl:{line}:{col} near '{code_as_string(e.code)}': {e.message}")
+      print(f"evaluation error @ repl:{line}:{col} near '{code_as_string(e.code)}': {e.message}")
 
 if __name__ == "__main__":
   if len(sys.argv) > 1: dofile(Path(sys.argv[1]), name="__main__")
