@@ -1,7 +1,6 @@
-# TODO: from basic import *
+from basic import *
 
 assert __name__ == "__main__"
 
 assert type == type[.type]
-bool = type[.bool]
 assert bool != type

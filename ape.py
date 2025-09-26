@@ -238,6 +238,12 @@ class Code_SubscriptOrCall(Code):
   expr: Code
   exprs: list[Code]
 @dataclass
+class Code_ImportFrom(Code):
+  module_name: str
+  names: list[str]
+  aliases: list[str | None]
+  excludes: list[str]
+@dataclass
 class Code_Assert(Code):
   cond: Code
   message: Code | None
@@ -361,6 +367,32 @@ class Parser:
     elif self.peek().kind == TokenKind.KEYWORD_pass:
       token = self.eat(TokenKind.KEYWORD_pass)
       return Code_Pass(token.location, token.length)
+    elif self.peek().kind == TokenKind.KEYWORD_from:
+      token = self.eat(TokenKind.KEYWORD_from)
+      module_name = self.eat(TokenKind.IDENTIFIER).as_str(self.s)
+      self.eat(TokenKind.KEYWORD_import)
+      names: list[str] = []
+      aliases: list[str | None] = []
+      excludes: list[str] = []
+      if self.peek().kind == ord('*'):
+        self.eat(ord('*'))
+        if self.peek().kind == TokenKind.KEYWORD_except:
+          self.eat(TokenKind.KEYWORD_except)
+          while True:
+            excludes.append(self.eat(TokenKind.IDENTIFIER).as_str(self.s))
+            if self.peek().kind == ord(','): self.eat(ord(','))
+            else: break
+      else:
+        while True:
+          names.append(self.eat(TokenKind.IDENTIFIER).as_str(self.s))
+          if self.peek().kind == TokenKind.KEYWORD_as:
+            self.eat(TokenKind.KEYWORD_as)
+            aliases.append(self.eat(TokenKind.IDENTIFIER).as_str(self.s))
+          else:
+            aliases.append(None)
+          if self.peek().kind == ord(','): self.eat(ord(','))
+          else: break
+      return Code_ImportFrom(token.location, self.p, module_name, names, aliases, excludes)
     return self.parse_expression()
 
   def parse_line(self) -> list[Code]:
@@ -510,6 +542,8 @@ def code_as_string(code: Code, level: int = 0) -> str:
     return result
   elif isinstance(code, Code_SubscriptOrCall):
     return f"{code_as_string(code.expr, level)}[{", ".join(code_as_string(expr, level) for expr in code.exprs)}]"
+  elif isinstance(code, Code_ImportFrom):
+    return f"from {code.module_name} import {"*" if len(code.names) == 0 else ", ".join(f"{name}{f" as {alias}" if alias else ""}" for name, alias in zip(code.names, code.aliases))}{f" except {", ".join(code.excludes)}" if len(code.excludes) else ""}"
   elif isinstance(code, Code_Assert):
     return f"assert {code_as_string(code.cond, level)}{f", {code_as_string(code.message, level)}" if code.message else ""}"
   elif isinstance(code, Code_With):
@@ -534,6 +568,9 @@ type_bool = NamedType("bool")
 type_int = NamedType("int")
 type_float = NamedType("float")
 type_str = NamedType("str")
+type_list = NamedType("list")
+type_dict = NamedType("dict")
+type_tuple = NamedType("tuple")
 type_procedure = NamedType("procedure")
 type_procedure_set = NamedType("procedure_set")
 
@@ -621,6 +658,9 @@ def compiler_type(kind_value: Value, **kwargs: typing.Any) -> Value:
   if kind == "int": return Value(type_type, type_int)
   if kind == "float": return Value(type_type, type_float)
   if kind == "str": return Value(type_type, type_str)
+  if kind == "list": return Value(type_type, type_list)
+  if kind == "dict": return Value(type_type, type_dict)
+  if kind == "tuple": return Value(type_type, type_tuple)
   if kind == "procedure": return Value(type_type, type_procedure)
   if kind == "procedure_set": return Value(type_type, type_procedure_set)
   raise Evaluator.Error(f"I could not find a type that goes by the name {kind}.", kwargs["arg_codes"][0])
@@ -647,19 +687,18 @@ class Evaluator:
     if isinstance(ty, NamedType): return f"type[.{ty.name}]"
     raise NotImplementedError(ty.__class__.__name__)
 
-  def call(self, code: Code, scope: Scope, expr: Value, args: list[Code]) -> Value:
+  def call(self, scope: Scope, expr: Value, op_code: Code, arg_codes: list[Code]) -> Value:
     try: proc_set = expr.as_procedure_set
-    except TypeError: raise Evaluator.Error("Attempted to call non-procedure.", code)
-    pargs = [self(arg, scope, False) for arg in args]
+    except TypeError: raise Evaluator.Error("Attempted to call non-procedure.", op_code)
+    pargs = [self(arg, scope, False) for arg in arg_codes]
     if len(pargs) == 0: pargs.append(Value(type_enum_literal, "type"))
-    return proc_set.procedures[0].as_procedure(*pargs)
+    return proc_set.procedures[0].as_procedure(*pargs, op_code=op_code, arg_codes=arg_codes)
 
   def __call__(self, code: Code, scope: Scope, disable_implicit_call: bool = False) -> Value:
     if isinstance(code, Code_Module):
-      module_scope = Scope(self.global_scope)
-      module_scope.entries.update({"__name__": Value(type_str, code.name)})
+      scope.entries.update({"__name__": Value(type_str, code.name)})
       for child in code.body:
-        self(child, module_scope, disable_implicit_call)
+        self(child, scope, disable_implicit_call)
       return value_void
     elif isinstance(code, Code_Literal):
       if isinstance(code.value, bool): return value_true if code.value else value_false
@@ -673,7 +712,7 @@ class Evaluator:
       value = scope.find(code.name)
       if value is None: raise Evaluator.Error("Not in scope!", code)
       if not disable_implicit_call and value.ty == type_procedure_set:
-        value = self.call(code, scope, value, [])
+        value = self.call(scope, value, code, [])
       return value
     elif isinstance(code, Code_Declaration):
       if len(code.names) != 1: raise NotImplementedError()
@@ -695,11 +734,23 @@ class Evaluator:
       raise Evaluator.Error(f"Binary operator {opstr[code.op]} is not defined between {self.type_as_string(left.ty)} and {self.type_as_string(right.ty)}!", code)
     elif isinstance(code, Code_SubscriptOrCall):
       expr = self(code.expr, scope, True)
-      if expr.ty == type_procedure_set: return self.call(code.expr, scope, expr, code.exprs)
+      if expr.ty == type_procedure_set: return self.call(scope, expr, code.expr, code.exprs)
       else:
         assert len(code.exprs) == 1
         # key = self(code.exprs[0], scope)
         raise NotImplementedError()
+    elif isinstance(code, Code_ImportFrom):
+      src = Path(code.module_name).with_suffix(".ape").read_text()
+      module = Parser(src).parse_Module(code.module_name)
+      evaluator = Evaluator(src)
+      evaluator(module, evaluator.global_scope)
+      if len(code.names):
+        for name, alias in zip(code.names, code.aliases):
+          scope.entries[alias if alias else name] = evaluator.global_scope.entries[name]
+      else:
+        # TODO(dfra): *Should* this ignore duplicates like __name__? Obviously this won't work for procedure sets...
+        scope.entries.update({k: v for k,v in evaluator.global_scope.entries.items() if k not in code.excludes and k not in scope.entries})
+      return value_void
     elif isinstance(code, Code_Assert):
       try: cond = self(code.cond, scope, disable_implicit_call).as_bool
       except TypeError: raise Evaluator.Error("Assertion condition did not result in a boolean!", code.cond)
