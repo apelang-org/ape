@@ -672,6 +672,12 @@ def code_as_string(code: Code, level: int = 0) -> str:
 class Type: pass
 @dataclass(frozen=True)
 class NamedType(Type): name: str
+@dataclass(frozen=True)
+class ProcedureType(Type):
+  parameter_types: list[Type]
+  return_type: Type
+  varargs_type: Type | None = None
+  is_macro: bool = False
 
 type_type = NamedType("type")
 type_code = NamedType("code")
@@ -686,16 +692,16 @@ type_str = NamedType("str")
 type_list = NamedType("list")
 type_dict = NamedType("dict")
 type_tuple = NamedType("tuple")
-type_procedure = NamedType("procedure")
 type_procedure_set = NamedType("procedure_set")
 
 @dataclass
 class Value:
   class Procedure:
-    def __init__(self, body: typing.Callable[..., "Value"] | list[Code], constant_names: list[str], parameter_names: list[str], brackets: bool) -> None:
+    def __init__(self, body: typing.Callable[..., "Value"] | list[Code], constant_names: list[str], parameter_names: list[str], defaults: dict[str, "Value"], brackets: bool) -> None:
       self.body = body
       self.constant_names = constant_names
       self.parameter_names = parameter_names
+      self.defaults = defaults
       self.brackets = brackets
 
     def __call__(self, *args: "Value", **kwargs: typing.Any) -> "Value":
@@ -736,7 +742,7 @@ class Value:
     return self.contents
   @property
   def as_procedure(self) -> Procedure:
-    if self.ty != type_procedure or not isinstance(self.contents, Value.Procedure): raise TypeError()
+    if not isinstance(self.ty, ProcedureType) or not isinstance(self.contents, Value.Procedure): raise TypeError()
     return self.contents
   @property
   def as_bool(self) -> bool:
@@ -789,14 +795,14 @@ def compiler_type(kind_value: Value, **kwargs: typing.Any) -> Value:
   if kind == "list": return Value(type_type, type_list)
   if kind == "dict": return Value(type_type, type_dict)
   if kind == "tuple": return Value(type_type, type_tuple)
-  if kind == "procedure": return Value(type_type, type_procedure)
+  if kind == "procedure": raise NotImplementedError()
   if kind == "procedure_set": return Value(type_type, type_procedure_set)
   raise Evaluator.Error(f"I could not find a type that goes by the name {kind}.", kwargs["arg_codes"][0])
 
 compiler_scope = Scope(None)
 compiler_scope.entries.update({
   "type": Value(type_procedure_set, Value.ProcedureSet([
-    Value(type_procedure, Value.Procedure(compiler_type, [], ["kind"], True)),
+    Value(ProcedureType([type_enum_literal], type_procedure_set), Value.Procedure(compiler_type, [], ["kind"], {"kind": Value(type_enum_literal, "type")}, True)),
   ])),
 })
 
@@ -818,10 +824,41 @@ class Evaluator:
   def call(self, scope: Scope, expr: Value, op_code: Code, arg_codes: list[Code]) -> Value:
     try: proc_set = expr.as_procedure_set
     except TypeError: raise Evaluator.Error("Attempted to call non-procedure.", op_code)
-    proc = proc_set.procedures[0]
-    pargs = [self(arg, scope, False) for arg in arg_codes]
-    if len(pargs) == 0: raise Evaluator.Error("TYPECHECK!!!", op_code)
-    return proc.as_procedure(*pargs, ty=proc.ty, evaluator=self, op_code=op_code, arg_codes=arg_codes)
+    proc_value = proc_set.procedures[0]
+    proc = proc_value.as_procedure
+    assert isinstance(proc_value.ty, ProcedureType)
+    posargs: list[Value] = [value_void] * len(proc_value.ty.parameter_types)
+    namedargs: dict[str, Value] = {}
+    posargi = 0
+    for arg in arg_codes:
+      if isinstance(arg, Code_Declaration):
+        assert len(arg.names) == 1
+        assert not arg.type_expr
+        assert len(arg.exprs) == 1
+        name = arg.names[0]
+        arg_value = self(arg.exprs[0], scope)
+        if name in proc.parameter_names:
+          index = proc.parameter_names.index(name)
+          if arg_value.ty != proc_value.ty.parameter_types[index]:
+            raise Evaluator.Error(f"type mismatch", arg_codes[index])
+          posargs[index] = arg_value
+          posargi = index + 1
+        else:
+          namedargs[name] = arg_value
+      else:
+        arg_value = self(arg, scope)
+        if arg_value.ty != proc_value.ty.parameter_types[posargi]:
+          raise Evaluator.Error(f"type mismatch", arg_codes[posargi])
+        posargs[posargi] = arg_value
+        posargi += 1
+    while posargi < len(proc.parameter_names) and proc.parameter_names[posargi] in proc.defaults:
+      arg_value = proc.defaults[proc.parameter_names[posargi]]
+      if arg_value.ty != proc_value.ty.parameter_types[posargi]:
+        raise Evaluator.Error(f"type mismatch", arg_codes[posargi])
+      posargs[posargi] = arg_value
+      posargi += 1
+    if posargi < len(proc.parameter_names): raise Evaluator.Error("not enough arguments provided", op_code)
+    return proc(*posargs, namedargs=namedargs, ty=proc_value.ty, evaluator=self, op_code=op_code, arg_codes=arg_codes)
 
   def __call__(self, code: Code, scope: Scope, disable_implicit_call: bool = False) -> Value:
     if isinstance(code, Code_Module):
@@ -853,6 +890,7 @@ class Evaluator:
       constant_names: list[str] = []
       parameter_names: list[str] = []
       parameter_types: list[Type] = []
+      defaults: dict[str, Value] = {}
       for constant in code.constants:
         constant_names.append(constant.name)
       for param in code.params:
@@ -867,7 +905,7 @@ class Evaluator:
         try: return_type = self(code.return_type, scope, disable_implicit_call).as_type
         except TypeError: raise Evaluator.Error(f"Return type expression is not a type!", code.return_type)
       _ = return_type
-      proc = Value(type_procedure, Value.Procedure(code.body, constant_names, parameter_names, code.brackets))
+      proc = Value(ProcedureType(parameter_types, return_type, is_macro=code.is_macro), Value.Procedure(code.body, constant_names, parameter_names, defaults, code.brackets))
       value = scope.find(code.name)
       if value and value.ty == type_procedure_set:
         value.as_procedure_set.procedures.append(proc)
@@ -959,7 +997,7 @@ def dofile(path: Path, name: str | None = None) -> None:
   evaluator = Evaluator(src)
   try:
     module = parser.parse_Module(name)
-    print(code_as_string(module))
+    # print(code_as_string(module))
     evaluator(module, evaluator.global_scope)
   except TokenizerError as e:
     traceback.print_exc()
