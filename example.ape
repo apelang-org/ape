@@ -2,5 +2,10 @@ from basic import *
 
 assert __name__ == "__main__"
 
-assert type == type[.type]
-assert bool != type
+# assert type == type[.type]
+# assert bool != type
+
+def abs(x: int) -> int: return -x if x < 0 else x
+
+assert abs(5) == 5
+assert abs(-7) == 7

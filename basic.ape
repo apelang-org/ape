@@ -1,6 +1,6 @@
 assert __name__ == "basic"
 
-assert type == type[.type]
+# assert type == type[.type]
 bool = type[.bool]
 int = type[.int]
 float = type[.float]

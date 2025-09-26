@@ -144,6 +144,13 @@ class TokenizerError(Exception):
     self.message = message
     self.token = token
 
+def isbasedigit(c: str, base: int) -> bool:
+  if base == 2: return '0' <= c <= '1'
+  if base == 8: return '0' <= c <= '7'
+  if base == 10: return '0' <= c <= '9'
+  if base == 16: return '0' <= c <= '9' or 'a' <= c.lower() <= 'f'
+  raise NotImplementedError(base)
+
 def token_at(s: str, p: int) -> Token:
   start = p
   newline_was_skipped = False
@@ -168,6 +175,30 @@ def token_at(s: str, p: int) -> Token:
     while p < len(s) and (s[p].isalnum() or s[p] == '_'): p += 1
     if s[start:p] in kwlist: return Token(kwlist[s[start:p]], start, p - start)
     return Token(TokenKind.IDENTIFIER, start, p - start)
+  if s[p].isdigit():
+    base = 10
+    is_float = False
+    if p + 1 < len(s) and s[p] == '0' and s[p + 1] in "box":
+      p += 1
+      if s[p] == 'b': base = 2
+      if s[p] == 'o': base = 8
+      if s[p] == 'x': base = 16
+      p += 1
+      if p >= len(s) or not isbasedigit(s[p], base): raise TokenizerError(f"Integer literal contains invalid input.", Token(TokenKind.INTEGER, start, p - start))
+    while p < len(s) and isbasedigit(s[p], base): p += 1
+    if p < len(s) and s[p] == '.':
+      p += 1
+      is_float = True
+      if base != 10: raise TokenizerError(f"Float literal can not have a non-ten base.", Token(TokenKind.FLOAT, start, p - start))
+      while p < len(s) and s[p].isdigit(): p += 1
+    if p < len(s) and s[p].lower() == 'e':
+      p += 1
+      if p < len(s) and s[p] in "+-": p += 1
+      if p >= len(s) or not s[p].isdigit(): raise TokenizerError(f"Float literal must contain a digit after exponent marker.", Token(TokenKind.FLOAT, start, p - start))
+      is_float = True
+      if base != 10: raise TokenizerError(f"Float literal can not have a non-ten base.", Token(TokenKind.FLOAT, start, p - start))
+      while p < len(s) and s[p].isdigit(): p += 1
+    return Token(TokenKind.FLOAT if is_float else TokenKind.INTEGER, start, p - start)
   if s[p] == '"':
     p += 1
     while p < len(s) and (s[p - 1] == '\\' or s[p] != '"'): p += 1
@@ -224,10 +255,23 @@ class Code_Procedure(Code):
   body: list[Code]
   is_macro: bool
 @dataclass
+class Code_UnaryOp(Code):
+  op: int
+  right: Code
+@dataclass
 class Code_BinaryOp(Code):
   left: Code
   op: int
   right: Code
+@dataclass
+class Code_IfExpression(Code):
+  conseq: Code
+  cond: Code
+  alt: Code
+@dataclass
+class Code_Call(Code):
+  expr: Code
+  args: list[Code]
 @dataclass
 class Code_Slice(Code):
   expr: Code
@@ -243,6 +287,9 @@ class Code_ImportFrom(Code):
   names: list[str]
   aliases: list[str | None]
   excludes: list[str]
+@dataclass
+class Code_Return(Code):
+  exprs: list[Code]
 @dataclass
 class Code_Assert(Code):
   cond: Code
@@ -301,6 +348,14 @@ class Parser:
     if self.peek().kind == TokenKind.IDENTIFIER:
       name = self.eat(TokenKind.IDENTIFIER)
       result = Code_Variable(name.location, name.length, name.as_str(self.s))
+    elif self.peek().kind == TokenKind.INTEGER:
+      token = self.eat(TokenKind.INTEGER)
+      value = int(token.as_str(self.s), base=0)
+      result = Code_Literal(token.location, token.length, value)
+    elif self.peek().kind == TokenKind.FLOAT:
+      token = self.eat(TokenKind.FLOAT)
+      value = float(token.as_str(self.s))
+      result = Code_Literal(token.location, token.length, value)
     elif self.peek().kind == TokenKind.STRING:
       token = self.eat(TokenKind.STRING)
       is_thick = token.as_str(self.s).startswith('"""')
@@ -309,9 +364,30 @@ class Parser:
       token = self.eat(ord('.'))
       name = self.eat(TokenKind.IDENTIFIER)
       result = Code_Literal(token.location, self.p, Code_Literal.EnumLiteral(name.as_str(self.s)))
+    elif self.peek().kind == ord('('):
+      self.eat(ord('('))
+      result = self.parse_expression()
+      self.eat(ord(')'))
+    elif self.peek().kind in [ord('-'), ord('~'), TokenKind.KEYWORD_not]:
+      token = self.eat(self.peek().kind)
+      right = self.parse_leaf()
+      result = Code_UnaryOp(token.location, self.p, token.kind, right)
     if result is None: raise Parser.Error(f"I do not know of an expression that starts with {TokenKind.as_str(self.peek().kind)}.", self.peek())
     while True:
-      if self.peek().kind == ord('['):
+      if self.peek().kind == ord('('):
+        token = self.eat(ord('('))
+        args: list[Code] = []
+        while self.peek().kind != ord(')'):
+          if self.peek(2).kind == ord('='):
+            args.append(self.parse_Declaration())
+          else:
+            args.append(self.parse_expression())
+          if self.peek().kind == ord(','): self.eat(ord(','))
+          else: break
+        self.eat(ord(')'))
+        result = Code_Call(result.start_location, self.p, result, args)
+        continue
+      elif self.peek().kind == ord('['):
         self.eat(ord('['))
         expr_a: Code | None = None
         expr_b: Code | None = None
@@ -351,11 +427,29 @@ class Parser:
       op = self.eat(self.peek().kind)
       right = self.parse_expression(min_prec)
       left = Code_BinaryOp(start, self.p, left, op.kind, right)
+    if min_prec == -1:
+      while True:
+        if self.peek().kind == TokenKind.KEYWORD_if:
+          self.eat(TokenKind.KEYWORD_if)
+          cond = self.parse_expression()
+          self.eat(TokenKind.KEYWORD_else)
+          alt = self.parse_expression()
+          left = Code_IfExpression(start, self.p, left, cond, alt)
+          continue
+        break
     return left
 
   def parse_inline_statement_or_expression(self) -> Code:
     if self.peek().kind == TokenKind.IDENTIFIER and self.peek(2).kind in [ord(','), ord(':'), ord('=')]:
       return self.parse_Declaration()
+    elif self.peek().kind == TokenKind.KEYWORD_return:
+      token = self.eat(TokenKind.KEYWORD_return)
+      exprs: list[Code] = []
+      while self.peek().kind not in [TokenKind.NEWLINE, TokenKind.END_OF_INPUT]:
+        exprs.append(self.parse_expression())
+        if self.peek().kind == ord(','): self.eat(ord(','))
+        else: break
+      return Code_Return(token.location, self.p, exprs)
     elif self.peek().kind == TokenKind.KEYWORD_assert:
       token = self.eat(TokenKind.KEYWORD_assert)
       cond = self.parse_expression()
@@ -540,6 +634,8 @@ def code_as_string(code: Code, level: int = 0) -> str:
     result += f" {opstr[code.op]} "
     result += f"{"(" if right_wrap else ""}{code_as_string(code.right, level)}{")" if right_wrap else ""}"
     return result
+  elif isinstance(code, Code_Call):
+    return f"{code_as_string(code.expr, level)}({", ".join(code_as_string(arg, level) for arg in code.args)})"
   elif isinstance(code, Code_SubscriptOrCall):
     return f"{code_as_string(code.expr, level)}[{", ".join(code_as_string(expr, level) for expr in code.exprs)}]"
   elif isinstance(code, Code_ImportFrom):
@@ -585,14 +681,21 @@ class Value:
 
     def __call__(self, *args: "Value", **kwargs: typing.Any) -> "Value":
       if callable(self.body): return self.body(*args, **kwargs)
-      else: raise NotImplementedError()
+      else:
+        procedure_scope = Scope(kwargs["evaluator"].global_scope)
+        for i, arg in enumerate(args):
+          procedure_scope.entries.update({self.parameter_names[i]: arg})
+        for child in self.body:
+          result = kwargs["evaluator"](child, procedure_scope)
+          if hasattr(result, "$return"): delattr(result, "$return"); return result
+        return value_void
 
   class ProcedureSet:
     def __init__(self, procedures: list["Value"]) -> None:
       self.procedures = procedures
 
   ty: Type
-  contents: Type | Code | Procedure | ProcedureSet | bool | int | float | str | None
+  contents: Type | Code | tuple["Value", ...] | Procedure | ProcedureSet | bool | int | float | str | None
 
   @property
   def as_type(self) -> Type:
@@ -690,9 +793,10 @@ class Evaluator:
   def call(self, scope: Scope, expr: Value, op_code: Code, arg_codes: list[Code]) -> Value:
     try: proc_set = expr.as_procedure_set
     except TypeError: raise Evaluator.Error("Attempted to call non-procedure.", op_code)
+    proc = proc_set.procedures[0]
     pargs = [self(arg, scope, False) for arg in arg_codes]
-    if len(pargs) == 0: pargs.append(Value(type_enum_literal, "type"))
-    return proc_set.procedures[0].as_procedure(*pargs, op_code=op_code, arg_codes=arg_codes)
+    if len(pargs) == 0: raise Evaluator.Error("TYPECHECK!!!", op_code)
+    return proc.as_procedure(*pargs, evaluator=self, op_code=op_code, arg_codes=arg_codes)
 
   def __call__(self, code: Code, scope: Scope, disable_implicit_call: bool = False) -> Value:
     if isinstance(code, Code_Module):
@@ -718,13 +822,56 @@ class Evaluator:
       if len(code.names) != 1: raise NotImplementedError()
       if code.type_expr: raise NotImplementedError()
       if len(code.exprs) != 1: raise NotImplementedError()
-      scope.entries[code.names[0]] = self(code.exprs[0], scope)
+      scope.entries[code.names[0]] = self(code.exprs[0], scope, disable_implicit_call)
       return value_void
+    elif isinstance(code, Code_Procedure):
+      constant_names: list[str] = []
+      parameter_names: list[str] = []
+      parameter_types: list[Type] = []
+      for constant in code.constants:
+        constant_names.append(constant.name)
+      for param in code.params:
+        assert len(param.names) == 1
+        assert param.type_expr is not None
+        assert len(param.exprs) == 0
+        parameter_names.append(param.names[0])
+        try: parameter_types.append(self(param.type_expr, scope, disable_implicit_call).as_type)
+        except TypeError: raise Evaluator.Error(f"Parameter type expression is not a type!", param.type_expr)
+      return_type = type_void
+      if code.return_type:
+        try: return_type = self(code.return_type, scope, disable_implicit_call).as_type
+        except TypeError: raise Evaluator.Error(f"Return type expression is not a type!", code.return_type)
+      _ = return_type
+      proc = Value(type_procedure, Value.Procedure(code.body, constant_names, parameter_names, code.brackets))
+      value = scope.find(code.name)
+      if value and value.ty == type_procedure_set:
+        value.as_procedure_set.procedures.append(proc)
+      else:
+        scope.entries[code.name] = Value(type_procedure_set, Value.ProcedureSet([proc]))
+      return value_void
+    elif isinstance(code, Code_UnaryOp):
+      right = self(code.right, scope, disable_implicit_call)
+      if right.ty == type_int:
+        if code.op == ord('-'): return Value(type_int, -right.as_int)
+        if code.op == ord('~'): return Value(type_int, ~right.as_int)
+      if right.ty == type_bool:
+        if code.op == TokenKind.KEYWORD_not: return value_true if not right.as_bool else value_false
+      raise Evaluator.Error(f"Unary operator {opstr[code.op]} is not defined for {self.type_as_string(right.ty)}!", code)
     elif isinstance(code, Code_BinaryOp):
       left = self(code.left, scope, disable_implicit_call)
       right = self(code.right, scope, disable_implicit_call)
       if left.ty == type_int and right.ty == type_int:
-        if code.op == ord('+'): return Value(type_int, left.as_int + right.as_int,)
+        if code.op == ord('+'): return Value(type_int, left.as_int + right.as_int)
+        if code.op == ord('-'): return Value(type_int, left.as_int - right.as_int)
+        if code.op == ord('*'): return Value(type_int, left.as_int * right.as_int)
+        if code.op == TokenKind.SLASHSLASH: return Value(type_int, left.as_int // right.as_int)
+        if code.op == ord('%'): return Value(type_int, left.as_int % right.as_int)
+        if code.op == TokenKind.EQEQ: return value_true if left.as_int == right.as_int else value_false
+        if code.op == TokenKind.BANGEQ: return value_true if left.as_int != right.as_int else value_false
+        if code.op == TokenKind.LTEQ: return value_true if left.as_int <= right.as_int else value_false
+        if code.op == TokenKind.GTEQ: return value_true if left.as_int >= right.as_int else value_false
+        if code.op == ord('<'): return value_true if left.as_int < right.as_int else value_false
+        if code.op == ord('>'): return value_true if left.as_int > right.as_int else value_false
       if left.ty == type_str and right.ty == type_str:
         if code.op == TokenKind.EQEQ: return value_true if left.as_str == right.as_str else value_false
         if code.op == TokenKind.BANGEQ: return value_true if left.as_str != right.as_str else value_false
@@ -732,6 +879,8 @@ class Evaluator:
         if code.op == TokenKind.EQEQ: return value_true if left.as_type == right.as_type else value_false
         if code.op == TokenKind.BANGEQ: return value_true if left.as_type != right.as_type else value_false
       raise Evaluator.Error(f"Binary operator {opstr[code.op]} is not defined between {self.type_as_string(left.ty)} and {self.type_as_string(right.ty)}!", code)
+    elif isinstance(code, Code_Call):
+      return self.call(scope, self(code.expr, scope, True), code.expr, code.args)
     elif isinstance(code, Code_SubscriptOrCall):
       expr = self(code.expr, scope, True)
       if expr.ty == type_procedure_set: return self.call(scope, expr, code.expr, code.exprs)
@@ -739,6 +888,9 @@ class Evaluator:
         assert len(code.exprs) == 1
         # key = self(code.exprs[0], scope)
         raise NotImplementedError()
+    elif isinstance(code, Code_IfExpression):
+      # TODO: TYPECHECK!!1!
+      return self(code.conseq, scope, disable_implicit_call) if self(code.cond, scope, disable_implicit_call).as_bool else self(code.alt, scope, disable_implicit_call)
     elif isinstance(code, Code_ImportFrom):
       src = Path(code.module_name).with_suffix(".ape").read_text()
       module = Parser(src).parse_Module(code.module_name)
@@ -751,6 +903,10 @@ class Evaluator:
         # TODO(dfra): *Should* this ignore duplicates like __name__? Obviously this won't work for procedure sets...
         scope.entries.update({k: v for k,v in evaluator.global_scope.entries.items() if k not in code.excludes and k not in scope.entries})
       return value_void
+    elif isinstance(code, Code_Return):
+      value = Value(type_tuple, tuple(self(expr, scope) for expr in code.exprs)) if len(code.exprs) > 1 else (self(code.exprs[0], scope) if len(code.exprs) > 0 else value_void)
+      setattr(value, "$return", True)
+      return value
     elif isinstance(code, Code_Assert):
       try: cond = self(code.cond, scope, disable_implicit_call).as_bool
       except TypeError: raise Evaluator.Error("Assertion condition did not result in a boolean!", code.cond)
