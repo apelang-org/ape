@@ -1,0 +1,15 @@
+assert __name__ == "basic"
+
+assert type == type[.type]
+bool = type[.bool]
+int = type[.int]
+float = type[.float]
+str = type[.str]
+list = type[.list]
+dict = type[.dict]
+tuple = type[.tuple]
+
+with:
+  pass
+
+def f(x: int) -> int: pass
