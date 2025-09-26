@@ -8,8 +8,3 @@ str = type[.str]
 list = type[.list]
 dict = type[.dict]
 tuple = type[.tuple]
-
-with:
-  pass
-
-def f(x: int) -> int: pass

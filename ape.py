@@ -489,7 +489,8 @@ def code_as_string(code: Code, level: int = 0) -> str:
   if isinstance(code, Code_Module):
     return "\n".join(code_as_string(child, level) for child in code.body)
   elif isinstance(code, Code_Literal):
-    if isinstance(code.value, bool | int | float | None): return str(code.value)
+    if isinstance(code.value, Code_Literal.EnumLiteral): return f".{code.value}"
+    elif isinstance(code.value, bool | int | float | None): return str(code.value)
     else: return f"{'"""' if code.is_thick else '"'}{code.value}{'"""' if code.is_thick else '"'}"
   elif isinstance(code, Code_Variable):
     return f"{code.name}"
@@ -518,14 +519,207 @@ def code_as_string(code: Code, level: int = 0) -> str:
   else:
     raise NotImplementedError(code.__class__.__name__)
 
+@dataclass(frozen=True)
+class Type: pass
+@dataclass(frozen=True)
+class NamedType(Type): name: str
+
+type_type = NamedType("type")
+type_code = NamedType("code")
+type_none = NamedType("none")
+type_enum_literal = NamedType("enum_literal")
+type_noreturn = NamedType("noreturn")
+type_void = NamedType("void")
+type_bool = NamedType("bool")
+type_int = NamedType("int")
+type_float = NamedType("float")
+type_str = NamedType("str")
+type_procedure = NamedType("procedure")
+type_procedure_set = NamedType("procedure_set")
+
+@dataclass
+class Value:
+  class Procedure:
+    def __init__(self, body: typing.Callable[..., "Value"] | list[Code], constant_names: list[str], parameter_names: list[str], brackets: bool) -> None:
+      self.body = body
+      self.constant_names = constant_names
+      self.parameter_names = parameter_names
+      self.brackets = brackets
+
+    def __call__(self, *args: "Value", **kwargs: typing.Any) -> "Value":
+      if callable(self.body): return self.body(*args, **kwargs)
+      else: raise NotImplementedError()
+
+  class ProcedureSet:
+    def __init__(self, procedures: list["Value"]) -> None:
+      self.procedures = procedures
+
+  ty: Type
+  contents: Type | Code | Procedure | ProcedureSet | bool | int | float | str | None
+
+  @property
+  def as_type(self) -> Type:
+    if self.ty != type_type or not isinstance(self.contents, Type): raise TypeError()
+    return self.contents
+  @property
+  def as_code(self) -> Code:
+    if self.ty != type_code or not isinstance(self.contents, Code): raise TypeError()
+    return self.contents
+  @property
+  def as_procedure_set(self) -> ProcedureSet:
+    if self.ty != type_procedure_set or not isinstance(self.contents, Value.ProcedureSet): raise TypeError()
+    return self.contents
+  @property
+  def as_procedure(self) -> Procedure:
+    if self.ty != type_procedure or not isinstance(self.contents, Value.Procedure): raise TypeError()
+    return self.contents
+  @property
+  def as_bool(self) -> bool:
+    if self.ty != type_bool or not isinstance(self.contents, bool): raise TypeError()
+    return self.contents
+  @property
+  def as_int(self) -> int:
+    if self.ty != type_int or not isinstance(self.contents, int): raise TypeError()
+    return self.contents
+  @property
+  def as_float(self) -> float:
+    if self.ty != type_float or not isinstance(self.contents, float): raise TypeError()
+    return self.contents
+  @property
+  def as_str(self) -> str:
+    if self.ty != type_str or not isinstance(self.contents, str): raise TypeError()
+    return self.contents
+  @property
+  def as_enum_literal(self) -> str:
+    if self.ty != type_enum_literal or not isinstance(self.contents, str): raise TypeError()
+    return self.contents
+
+value_void = Value(type_void, None)
+value_none = Value(type_none, None)
+value_true = Value(type_bool, True)
+value_false = Value(type_bool, False)
+
+class Scope:
+  def __init__(self, parent: "Scope | None") -> None:
+    self.parent = parent
+    self.entries: dict[str, Value] = {}
+
+  def find(self, key: str) -> Value | None:
+    if key in self.entries: return self.entries[key]
+    if self.parent is None: return None
+    return self.parent.find(key)
+
+def compiler_type(kind_value: Value, **kwargs: typing.Any) -> Value:
+  kind = kind_value.as_enum_literal
+  if kind == "type": return Value(type_type, type_type)
+  if kind == "code": return Value(type_type, type_code)
+  if kind == "none": return Value(type_type, type_none)
+  if kind == "enum_literal": return Value(type_type, type_enum_literal)
+  if kind == "noreturn": return Value(type_type, type_noreturn)
+  if kind == "void": return Value(type_type, type_void)
+  if kind == "bool": return Value(type_type, type_bool)
+  if kind == "int": return Value(type_type, type_int)
+  if kind == "float": return Value(type_type, type_float)
+  if kind == "str": return Value(type_type, type_str)
+  if kind == "procedure": return Value(type_type, type_procedure)
+  if kind == "procedure_set": return Value(type_type, type_procedure_set)
+  raise Evaluator.Error(f"I could not find a type that goes by the name {kind}.", kwargs["arg_codes"][0])
+
+compiler_scope = Scope(None)
+compiler_scope.entries.update({
+  "type": Value(type_procedure_set, Value.ProcedureSet([
+    Value(type_procedure, Value.Procedure(compiler_type, [], ["kind"], True)),
+  ])),
+})
+
+class Evaluator:
+  class Error(Exception):
+    def __init__(self, message: str, code: Code) -> None:
+      super().__init__(message, code)
+      self.message = message
+      self.code = code
+
+  def __init__(self, s: str, global_scope: Scope | None = None) -> None:
+    self.s = s
+    self.global_scope = global_scope if global_scope else Scope(compiler_scope)
+
+  def type_as_string(self, ty: Type) -> str:
+    if isinstance(ty, NamedType): return f"type[.{ty.name}]"
+    raise NotImplementedError(ty.__class__.__name__)
+
+  def call(self, code: Code, scope: Scope, expr: Value, args: list[Code]) -> Value:
+    try: proc_set = expr.as_procedure_set
+    except TypeError: raise Evaluator.Error("Attempted to call non-procedure.", code)
+    pargs = [self(arg, scope, False) for arg in args]
+    if len(pargs) == 0: pargs.append(Value(type_enum_literal, "type"))
+    return proc_set.procedures[0].as_procedure(*pargs)
+
+  def __call__(self, code: Code, scope: Scope, disable_implicit_call: bool = False) -> Value:
+    if isinstance(code, Code_Module):
+      module_scope = Scope(self.global_scope)
+      module_scope.entries.update({"__name__": Value(type_str, code.name)})
+      for child in code.body:
+        self(child, module_scope, disable_implicit_call)
+      return value_void
+    elif isinstance(code, Code_Literal):
+      if isinstance(code.value, bool): return value_true if code.value else value_false
+      elif isinstance(code.value, int): return Value(type_int, code.value)
+      elif isinstance(code.value, float): return Value(type_float, code.value)
+      elif isinstance(code.value, Code_Literal.EnumLiteral): return Value(type_enum_literal, code.value)
+      elif isinstance(code.value, str): return Value(type_str, code.value)
+      elif code.value is None: return value_none
+      raise NotImplementedError(type(code.value))
+    elif isinstance(code, Code_Variable):
+      value = scope.find(code.name)
+      if value is None: raise Evaluator.Error("Not in scope!", code)
+      if not disable_implicit_call and value.ty == type_procedure_set:
+        value = self.call(code, scope, value, [])
+      return value
+    elif isinstance(code, Code_Declaration):
+      if len(code.names) != 1: raise NotImplementedError()
+      if code.type_expr: raise NotImplementedError()
+      if len(code.exprs) != 1: raise NotImplementedError()
+      scope.entries[code.names[0]] = self(code.exprs[0], scope)
+      return value_void
+    elif isinstance(code, Code_BinaryOp):
+      left = self(code.left, scope, disable_implicit_call)
+      right = self(code.right, scope, disable_implicit_call)
+      if left.ty == type_int and right.ty == type_int:
+        if code.op == ord('+'): return Value(type_int, left.as_int + right.as_int,)
+      if left.ty == type_str and right.ty == type_str:
+        if code.op == TokenKind.EQEQ: return value_true if left.as_str == right.as_str else value_false
+        if code.op == TokenKind.BANGEQ: return value_true if left.as_str != right.as_str else value_false
+      if left.ty == type_type and right.ty == type_type:
+        if code.op == TokenKind.EQEQ: return value_true if left.as_type == right.as_type else value_false
+        if code.op == TokenKind.BANGEQ: return value_true if left.as_type != right.as_type else value_false
+      raise Evaluator.Error(f"Binary operator {opstr[code.op]} is not defined between {self.type_as_string(left.ty)} and {self.type_as_string(right.ty)}!", code)
+    elif isinstance(code, Code_SubscriptOrCall):
+      expr = self(code.expr, scope, True)
+      if expr.ty == type_procedure_set: return self.call(code.expr, scope, expr, code.exprs)
+      else:
+        assert len(code.exprs) == 1
+        # key = self(code.exprs[0], scope)
+        raise NotImplementedError()
+    elif isinstance(code, Code_Assert):
+      try: cond = self(code.cond, scope, disable_implicit_call).as_bool
+      except TypeError: raise Evaluator.Error("Assertion condition did not result in a boolean!", code.cond)
+      if code.message: raise NotImplementedError()
+      if not cond:
+        raise Evaluator.Error("Assertion failed!", code.cond)
+      return value_void
+    else:
+      raise NotImplementedError(code.__class__.__name__)
+
 def dofile(path: Path, name: str | None = None) -> None:
   name = name if name else path.stem
   src = path.read_text()
   # print_all_tokens(src)
   parser = Parser(src)
+  evaluator = Evaluator(src)
   try:
     module = parser.parse_Module(name)
-    print(code_as_string(module))
+    # print(code_as_string(module))
+    evaluator(module, evaluator.global_scope)
   except TokenizerError as e:
     traceback.print_exc()
     line, col = offset_to_line_col(src, e.token.location)
@@ -534,24 +728,34 @@ def dofile(path: Path, name: str | None = None) -> None:
     traceback.print_exc()
     line, col = offset_to_line_col(src, e.token.location)
     print(f"parse error @ {path}:{line}:{col} near '{e.token.as_str(src)}': {e.message}")
+  except Evaluator.Error as e:
+    traceback.print_exc()
+    line, col = offset_to_line_col(src, e.code.start_location)
+    print(f"parse error @ {path}:{line}:{col} near '{code_as_string(e.code)}': {e.message}")
 
 def repl() -> None:
   src = ""
+  repl_scope = Scope(compiler_scope)
   while True:
     pos = len(src)
     try: src += input("> ") + '\n'
     except (KeyboardInterrupt, EOFError): print(""); break
     # print_all_tokens(src, pos)
     parser = Parser(src, pos)
+    evaluator = Evaluator(src, repl_scope)
     try:
       module = parser.parse_Module("__main__")
-      print(code_as_string(module))
+      # print(code_as_string(module))
+      evaluator(module, evaluator.global_scope)
     except TokenizerError as e:
       line, col = offset_to_line_col(src, e.token.location)
       print(f"token error @ repl:{line}:{col}: {e.message}")
     except Parser.Error as e:
       line, col = offset_to_line_col(src, e.token.location)
       print(f"parse error @ repl:{line}:{col} near '{e.token.as_str(src)}': {e.message}")
+    except Evaluator.Error as e:
+      line, col = offset_to_line_col(src, e.code.start_location)
+      print(f"parse error @ repl:{line}:{col} near '{code_as_string(e.code)}': {e.message}")
 
 if __name__ == "__main__":
   if len(sys.argv) > 1: dofile(Path(sys.argv[1]), name="__main__")
