@@ -848,6 +848,11 @@ class Evaluator:
     if isinstance(ty, NamedType): return f"type[.{ty.name}]"
     raise NotImplementedError(ty.__class__.__name__)
 
+  def value_as_string(self, value: Value) -> str:
+    if value.ty == type_type: return self.type_as_string(value.as_type)
+    if value.ty == type_int: return str(value.as_int)
+    raise NotImplementedError(self.type_as_string(value.ty))
+
   def coerce(self, value: Value, ty: Type) -> Value | None:
     if value.ty == ty or isinstance(ty, VariableType): return value
     return None
@@ -1072,6 +1077,7 @@ def dofile(path: Path, name: str | None = None) -> None:
 def repl() -> None:
   src = ""
   repl_scope = Scope(compiler_scope)
+  repl_scope.entries.update({"__name__": Value(type_str, "__main__")})
   while True:
     pos = len(src)
     try: src += input("> ") + '\n'
@@ -1080,9 +1086,11 @@ def repl() -> None:
     parser = Parser(src, pos)
     evaluator = Evaluator(src, repl_scope)
     try:
-      module = parser.parse_Module("__main__")
-      # print(code_as_string(module))
-      evaluator(module, evaluator.global_scope)
+      block_statement_or_line = parser.try_parse_block_statement_or_line()
+      for code in block_statement_or_line:
+        # print(code_as_string(code))
+        result = evaluator(code, evaluator.global_scope)
+        if result is not value_void: print(evaluator.value_as_string(result))
     except TokenizerError as e:
       line, col = offset_to_line_col(src, e.token.location)
       print(f"token error @ repl:{line}:{col}: {e.message}")
