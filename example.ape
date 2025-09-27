@@ -1,1 +1,3 @@
-$operator '+ 5 10
+$block
+  $define 'x 5
+  $assert ($operator '== ($operator '+ x 5) 10 ($operator '+ 5 5))

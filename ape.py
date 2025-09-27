@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-import sys
+import sys, typing
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -172,17 +172,61 @@ class Evaluator:
 	class Type: pass
 	@dataclass(frozen=True)
 	class NamedType(Type): name: str
+	@dataclass(frozen=True)
+	class ProcedureType(Type):
+		parameter_types: list["Evaluator.Type"]
+		return_type: "Evaluator.Type"
+		varargs_type: "Evaluator.Type | None" = None
+		is_macro: bool = False
 
 	type_type = NamedType("type")
 	type_code = NamedType("code")
+	type_anytype = NamedType("anytype")
 	type_noreturn = NamedType("noreturn")
 	type_void = NamedType("void")
 	type_bool = NamedType("bool")
+	type_int = NamedType("int")
+	type_float = NamedType("float")
+	type_string = NamedType("string")
 
 	@dataclass
 	class Value:
+		class Procedure:
+			def __init__(self, body: typing.Callable[..., "Evaluator.Value"] | Tuple, name: str, parameter_names: list[str], varargs_name: str | None = None) -> None:
+				self.body = body
+				self.name = name
+				self.parameter_names = parameter_names
+				self.varargs_name = varargs_name
+
+			def __call__(self, *args: "Evaluator.Value", **kwargs: typing.Any) -> "Evaluator.Value":
+				if callable(self.body): return self.body(*args, **kwargs)
+				else: raise NotImplementedError()
+
 		ty: "Evaluator.Type"
-		contents: "Evaluator.Type | Code | None"
+		contents: "Evaluator.Type | Procedure | Code | Integer | Float | String | bool | None"
+
+		@property
+		def as_type(self) -> "Evaluator.Type":
+			if self.ty != Evaluator.type_type or not isinstance(self.contents, Evaluator.Type): raise TypeError()
+			return self.contents
+		@property
+		def as_procedure(self) -> Procedure:
+			if not isinstance(self.ty, Evaluator.ProcedureType) or not isinstance(self.contents, Evaluator.Value.Procedure): raise TypeError()
+			return self.contents
+		@property
+		def as_code(self) -> Code:
+			if self.ty != Evaluator.type_code or not isinstance(self.contents, Code): raise TypeError()
+			return self.contents
+		@property
+		def as_int(self) -> int:
+			if self.ty != Evaluator.type_int or not isinstance(self.contents, int): raise TypeError()
+			return self.contents
+		@property
+		def as_bool(self) -> bool:
+			if self.ty != Evaluator.type_bool or not isinstance(self.contents, bool): raise TypeError()
+			return self.contents
+
+	value_void = Value(type_void, None)
 
 	class Scope:
 		def __init__(self, parent: "Evaluator.Scope | None") -> None:
@@ -198,12 +242,93 @@ class Evaluator:
 		self.s = s
 		self.global_scope = global_scope if global_scope else Evaluator.Scope(compiler_scope)
 
-	def __call__(self, code: Code, scope: Scope) -> Value:
+	def coerce(self, value: Value, ty: Type) -> Value | None:
+		if value.ty == ty or ty == Evaluator.type_anytype: return value
+		return None
+
+	def type_as_string(self, ty: Type) -> str:
+		if isinstance(ty, Evaluator.NamedType): return f"($type '{ty.name})"
 		raise NotImplementedError()
 
-compiler_scope = Evaluator.Scope(None)
+	def value_as_string(self, value: Value) -> str:
+		if value.ty == Evaluator.type_type: return self.type_as_string(value.as_type)
+		if value.ty == Evaluator.type_code: return code_as_string(value.as_code)
+		if value.ty == Evaluator.type_int: return str(value.as_int)
+		if isinstance(value.ty, Evaluator.ProcedureType): return str(value.as_procedure)
+		raise NotImplementedError(self.type_as_string(value.ty))
 
-def dostring(src_path: str, evaluator: Evaluator, s: str, p: int = 0) -> None:
+	def __call__(self, code: Code, scope: Scope) -> Value:
+		if isinstance(code.contents, Identifier):
+			value = scope.find(code.contents)
+			if value is None: raise Evaluator.Error("Variable not in scope.", code)
+			return value
+		elif isinstance(code.contents, Integer): return Evaluator.Value(Evaluator.type_int, code.contents)
+		elif isinstance(code.contents, Float): return Evaluator.Value(Evaluator.type_float, code.contents)
+		elif isinstance(code.contents, String): return Evaluator.Value(Evaluator.type_string, code.contents)
+		assert isinstance(code.contents, Tuple), code.contents
+		if len(code.contents) == 0: raise Evaluator.Error("You attempted to call a procedure without specifying a name.", code)
+		op_code, *arg_codes = code.contents
+		op = self(op_code, scope)
+		try: proc = op.as_procedure
+		except TypeError: raise Evaluator.Error("You attempted to call something that is not a procedure.", code)
+		assert isinstance(op.ty, Evaluator.ProcedureType)
+		if len(arg_codes) < len(op.ty.parameter_types) or (len(arg_codes) != len(op.ty.parameter_types) and op.ty.varargs_type is None):
+			raise Evaluator.Error("Arity mismatch.", code)
+		pargs = [self(arg_code, scope) if not op.ty.is_macro or (op.ty.parameter_types[i] if i < len(op.ty.parameter_types) else op.ty.varargs_type) != Evaluator.type_code else Evaluator.Value(Evaluator.type_code, arg_code) for i, arg_code in enumerate(arg_codes)]
+		posargs, varargs = pargs[:len(op.ty.parameter_types)], pargs[len(op.ty.parameter_types):]
+		for i, posarg in enumerate(posargs):
+			coerced = self.coerce(posarg, op.ty.parameter_types[i])
+			if coerced is None: raise Evaluator.Error(f"Argument {self.type_as_string(posarg.ty)} could not coerce to {self.type_as_string(op.ty.parameter_types[i])}", code)
+			posargs[i] = coerced
+		for i, vararg in enumerate(varargs):
+			coerced = self.coerce(vararg, op.ty.varargs_type or Evaluator.type_void)
+			if coerced is None: raise Evaluator.Error(f"Variadic argument {self.type_as_string(vararg.ty)} could not coerce to {self.type_as_string(op.ty.varargs_type or Evaluator.type_void)}", code)
+			varargs[i] = coerced
+		return proc(*posargs, varargs=varargs, ty=op.ty, evaluator=self, calling_scope=scope, code=code, op_code=op_code, arg_codes=arg_codes)
+
+def compiler_block(**kwargs: typing.Any) -> Evaluator.Value:
+	block_scope = Evaluator.Scope(kwargs["calling_scope"])
+	for code_value in kwargs["varargs"]:
+		kwargs["evaluator"](code_value.as_code, block_scope)
+	return Evaluator.value_void
+
+def compiler_define(name_value: Evaluator.Value, value: Evaluator.Value, **kwargs: typing.Any) -> Evaluator.Value:
+	try: name = name_value.as_code.as_identifier
+	except TypeError: raise Evaluator.Error("$define expects argument one to be an identifier.", kwargs["code"])
+	kwargs["calling_scope"].entries[name] = value
+	return Evaluator.value_void
+
+def compiler_operator(kind_value: Evaluator.Value, **kwargs: typing.Any) -> Evaluator.Value:
+	try: kind = kind_value.as_code.as_identifier
+	except TypeError: raise Evaluator.Error("$operator expects argument one to be an identifier.", kwargs["code"])
+	varargs = typing.cast(list[Evaluator.Value], kwargs["varargs"])
+	if len(varargs) == 0: raise Evaluator.Error("$operator must have at least one variadic argument to determine its return type.", kwargs["code"])
+	try:
+		if varargs[0].ty == Evaluator.type_int:
+			if kind == Identifier("+"): return Evaluator.Value(Evaluator.type_int, sum([kwargs["evaluator"].coerce(vararg, Evaluator.type_int).as_int for vararg in varargs])) # type: ignore
+			if kind == Identifier("=="):
+				arg0 = kwargs["evaluator"].coerce(varargs[0], Evaluator.type_int).as_int
+				return Evaluator.Value(Evaluator.type_bool, all([arg0 == kwargs["evaluator"].coerce(vararg, Evaluator.type_int).as_int for vararg in varargs[1:]])) # type: ignore
+	except (TypeError, AttributeError): raise Evaluator.Error(f"Arguments could not coerce to {kwargs["evaluator"].type_as_string(varargs[0].ty)}.", kwargs["code"])
+	raise Evaluator.Error(f"$operator '{kind}' not defined for {kwargs["evaluator"].type_as_string(varargs[0].ty)}.", kwargs["code"])
+
+def compiler_quote(code_value: Evaluator.Value, **kwargs: typing.Any) -> Evaluator.Value:
+	return code_value
+
+def compiler_assert(cond_value: Evaluator.Value, **kwargs: typing.Any) -> Evaluator.Value:
+	if not cond_value.as_bool: raise Evaluator.Error("Assertion failed!", kwargs["code"])
+	return Evaluator.value_void
+
+compiler_scope = Evaluator.Scope(None)
+compiler_scope.entries.update({
+	Identifier("$block"): Evaluator.Value(Evaluator.ProcedureType([], Evaluator.type_void, Evaluator.type_code, is_macro=True), Evaluator.Value.Procedure(compiler_block, "$block", [], varargs_name="codes")),
+	Identifier("$define"): Evaluator.Value(Evaluator.ProcedureType([Evaluator.type_code, Evaluator.type_anytype], Evaluator.type_void), Evaluator.Value.Procedure(compiler_define, "$define", ["name", "value"])),
+	Identifier("$operator"): Evaluator.Value(Evaluator.ProcedureType([Evaluator.type_code], Evaluator.type_anytype, Evaluator.type_anytype), Evaluator.Value.Procedure(compiler_operator, "$operator", ["kind"], varargs_name="args")),
+	Identifier("$quote"): Evaluator.Value(Evaluator.ProcedureType([Evaluator.type_code], Evaluator.type_code, is_macro=True), Evaluator.Value.Procedure(compiler_quote, "$quote", ["code"])),
+	Identifier("$assert"): Evaluator.Value(Evaluator.ProcedureType([Evaluator.type_bool], Evaluator.type_void), Evaluator.Value.Procedure(compiler_assert, "$assert", ["cond"])),
+})
+
+def dostring(src_path: str, evaluator: Evaluator, s: str, p: int = 0, show_result: bool = False) -> None:
 	# evaluator.global_scope.entries["__file__"] = Evaluator.Value(type_string, src_path)
 	while True:
 		try: code, next_pos = parse_code(s, p)
@@ -212,8 +337,13 @@ def dostring(src_path: str, evaluator: Evaluator, s: str, p: int = 0) -> None:
 			print(f"parse error @ {src_path}:{line}:{col}: {e.message}"); break
 		if code is None: break
 		p = next_pos
-		print(code_as_string(code))
-		evaluator(code, evaluator.global_scope)
+		# print(code_as_string(code))
+		try:
+			result = evaluator(code, evaluator.global_scope)
+			if show_result and result is not Evaluator.value_void: print(evaluator.value_as_string(result))
+		except Evaluator.Error as e:
+			line, col = offset_to_line_col(s, e.code.start)
+			print(f"evaluation error @ {src_path}:{line}:{col} near '{code_as_string(e.code)}': {e.message}"); break
 
 def dofile(path: Path) -> Evaluator.Scope:
 	src = path.read_text()
@@ -229,7 +359,7 @@ def repl() -> None:
 		try: src += input("> ")
 		except (KeyboardInterrupt, EOFError): print(""); break
 		evaluator = Evaluator(src, repl_scope)
-		dostring("repl", evaluator, src, pos)
+		dostring("repl", evaluator, src, pos, show_result=True)
 
 if __name__ == "__main__":
 	if len(sys.argv) > 1: dofile(Path(sys.argv[1]))
