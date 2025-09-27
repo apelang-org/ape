@@ -12,3 +12,5 @@ with abs2 = nonlocal abs, abs3 = nonlocal abs:
   assert abs[-6] == abs(-6) == abs2(-6) == abs3(-6) == 6
 
 assert abs(-3) == 2 or abs(5) == 5 and abs(-7) == 7
+
+assert True if False else True if True else False

@@ -851,6 +851,7 @@ class Evaluator:
   def value_as_string(self, value: Value) -> str:
     if value.ty == type_type: return self.type_as_string(value.as_type)
     if value.ty == type_int: return str(value.as_int)
+    if value.ty == type_float: return str(value.as_float)
     raise NotImplementedError(self.type_as_string(value.ty))
 
   def coerce(self, value: Value, ty: Type) -> Value | None:
