@@ -1,16 +1,1 @@
-from basic import *
-
-assert __name__ == "__main__"
-
-assert bool != type(bool) == type == type[.type]
-assert 5 <= 10 <= 10 >= 5 == 2 + 3 != 7
-
-def abs(x: int) -> int: return -x if x < 0 else x
-def abs[x: int] -> int: return -x if x < 0 else x
-
-with abs2 = nonlocal abs, abs3 = nonlocal abs:
-  assert abs[-6] == abs(-6) == abs2(-6) == abs3(-6) == 6
-
-assert abs(-3) == 2 or abs(5) == 5 and abs(-7) == 7
-
-assert True if False else True if True else False
+$operator '+ 5 10
