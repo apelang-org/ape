@@ -92,7 +92,7 @@ class Token:
 
   def as_str(self, s: str) -> str: return s[self.location:self.location + self.length]
 
-def token_at(s: str, p: int) -> Token:
+def token_at(s: str, p: int, disable_whitespace: bool = False) -> Token:
   start = p
   newline_was_skipped = False
   beginning_of_line = start
@@ -105,13 +105,14 @@ def token_at(s: str, p: int) -> Token:
       continue
     break
   if p >= len(s): return Token(TokenKind.END_OF_INPUT, p, 0)
-  if newline_was_skipped and start != 0:
-    return Token(TokenKind.NEWLINE, beginning_of_line - 1, 1)
-  pb = p
-  while pb > 1 and s[pb - 1].isspace() and s[pb - 1] != '\n': pb -= 1
-  indent = p - beginning_of_line
-  if s[start].isspace() and s[pb - 1] == '\n' and indent > 0:
-    return Token(TokenKind.INDENT, beginning_of_line, indent)
+  if not disable_whitespace:
+    if newline_was_skipped and start != 0:
+      return Token(TokenKind.NEWLINE, beginning_of_line - 1, 1)
+    pb = p
+    while pb > 1 and s[pb - 1].isspace() and s[pb - 1] != '\n': pb -= 1
+    indent = p - beginning_of_line
+    if s[start].isspace() and s[pb - 1] == '\n' and indent > 0:
+      return Token(TokenKind.INDENT, beginning_of_line, indent)
   start = p
   if s[p].isalpha() or s[p] == '_':
     while p < len(s) and (s[p].isalnum() or s[p] == '_'): p += 1
@@ -255,7 +256,10 @@ class Code_Error(Code): pass
 @dataclass
 class Code_Literal(Code):
   is_thick: bool
-  value: int | float | str
+  value: bool | int | float | str | None
+@dataclass
+class Code_EnumLiteral(Code):
+  name: str
 @dataclass
 class Code_Variable(Code):
   is_nonlocal: bool
@@ -267,6 +271,14 @@ class Code_Declaration(Code):
   name: str
   type_expr: Code | None
   value_expr: Code | None
+@dataclass
+class Code_Procedure(Code):
+  is_nonlocal: bool
+  name: str
+  parameters: list[Code]
+  return_type: Code | None
+  attributes: Code | None
+  body: list[Code]
 @dataclass
 class Code_UnaryOp(Code):
   op: Token
@@ -282,12 +294,48 @@ class Code_Uninitialized(Code): pass
 class Code_TypeInstantiation(Code):
   name: str
 @dataclass
+class Code_ImportFrom(Code):
+  is_local: bool
+  path: list[str]
+  includes: list[str]
+  aliases: list[str | None]
+  excludes: list[str]
+@dataclass
+class Code_Import(Code):
+  is_local: bool
+  path: list[str]
+  alias: str | None
+@dataclass
+class Code_Assert(Code):
+  condition: Code
+  message: Code | None
+@dataclass
 class Code_Yield(Code):
+  body: list[Code]
+@dataclass
+class Code_Match(Code):
+  condition: Code | None
+  branches: list[Code]
+@dataclass
+class Code_Case(Code):
+  condition: Code | None
+  body: list[Code]
+@dataclass
+class Code_If(Code):
+  condition: Code
+  consequence: list[Code]
+  alt: list[Code]
+@dataclass
+class Code_Finally(Code):
   body: list[Code]
 @dataclass
 class Code_Call(Code):
   expression: Code
   arguments: list[Code]
+@dataclass
+class Code_AccessorOrCall(Code):
+  expression: Code
+  name: str
 
 class Parser:
   @dataclass
@@ -300,6 +348,7 @@ class Parser:
     self.src = src
     self.pos = pos
     self.indents = [0]
+    self.parens = 0
     self.errors: list[Parser.Error] = []
 
 def peek(p: Parser, n: int = 1) -> Token:
@@ -307,14 +356,14 @@ def peek(p: Parser, n: int = 1) -> Token:
   token: Token | None = None
   pos = p.pos
   for _ in range(n):
-    token = token_at(p.src, pos)
+    token = token_at(p.src, pos, disable_whitespace=p.parens > 0)
     if token.kind == TokenKind.ERROR: p.errors.append(Parser.Error(f"A token error occured starting with '{p.src[token.location]}'.", token, traceback.extract_stack()))
     pos = token.location + token.length
   assert token is not None
   return token
 
 def eat(p: Parser, expect: int) -> Token:
-  token = token_at(p.src, p.pos)
+  token = token_at(p.src, p.pos, disable_whitespace=p.parens > 0)
   p.pos = token.location + token.length
   if expect != token.kind: p.errors.append(Parser.Error(f"I expected {TokenKind.as_str(expect)} but saw {TokenKind.as_str(token.kind)}.", token, traceback.extract_stack()))
   return token
@@ -329,7 +378,7 @@ def parse_leaf(p: Parser) -> Code:
     if is_constant:
       eat(p, ord('$'))
       name = eat(p, TokenKind.IDENTIFIER).as_str(p.src)
-      return Code_TypeInstantiation(start, p.pos, name)
+      result = Code_TypeInstantiation(start, p.pos, name)
     else:
       if is_nonlocal: eat(p, TokenKind.KW_nonlocal)
       name = eat(p, TokenKind.IDENTIFIER).as_str(p.src)
@@ -346,6 +395,19 @@ def parse_leaf(p: Parser) -> Code:
     token = eat(p, TokenKind.THICK_STRING)
     value = token.as_str(p.src)[3:-3]
     result = Code_Literal(token.location, token.length, True, value)
+  elif peek(p).kind == ord('.'):
+    token = eat(p, ord('.'))
+    name = eat(p, TokenKind.IDENTIFIER).as_str(p.src)
+    result = Code_EnumLiteral(token.location, p.pos, name)
+  elif peek(p).kind == TokenKind.KW_False:
+    token = eat(p, TokenKind.KW_False)
+    result = Code_Literal(token.location, token.length, False, False)
+  elif peek(p).kind == TokenKind.KW_True:
+    token = eat(p, TokenKind.KW_True)
+    result = Code_Literal(token.location, token.length, False, True)
+  elif peek(p).kind == TokenKind.KW_None:
+    token = eat(p, TokenKind.KW_None)
+    result = Code_Literal(token.location, token.length, False, None)
   elif peek(p).kind in [ord('-'), ord('~')]:
     token = eat(p, peek(p).kind)
     right = parse_leaf(p)
@@ -356,7 +418,9 @@ def parse_leaf(p: Parser) -> Code:
     result = Code_UnaryOp(token.location, p.pos, token, right)
   elif peek(p).kind == ord('('):
     eat(p, ord('('))
+    p.parens += 1
     result = parse_expression(p)
+    p.parens -= 1
     eat(p, ord(')'))
   if result is None:
     p.errors.append(Parser.Error(f"I do not know of an expresion that starts with {TokenKind.as_str(peek(p).kind)}.", peek(p), traceback.extract_stack()))
@@ -364,13 +428,23 @@ def parse_leaf(p: Parser) -> Code:
   while True:
     if peek(p).kind == ord('('):
       eat(p, ord('('))
+      p.parens += 1
       arguments: list[Code] = []
       while peek(p).kind != ord(')'):
-        arguments.append(parse_expression(p))
-        if peek(p).kind == ord(';'): eat(p, ord(';'))
+        if peek(p, 2).kind == ord('='):
+          arguments.append(parse_declaration(p))
+        else:
+          arguments.append(parse_expression(p))
+        if peek(p).kind == ord(','): eat(p, ord(','))
         else: break
+      p.parens -= 1
       eat(p, ord(')'))
       result = Code_Call(result.start_location, p.pos, result, arguments)
+      continue
+    if peek(p).kind == ord('.'):
+      eat(p, ord('.'))
+      name = eat(p, TokenKind.IDENTIFIER).as_str(p.src)
+      result = Code_AccessorOrCall(result.start_location, p.pos, result, name)
       continue
     break
   return result
@@ -383,29 +457,86 @@ def parse_expression(p: Parser, min_prec: int = 0) -> Code:
     left = Code_BinaryOp(left.start_location, p.pos, left, op, right)
   return left
 
+def parse_declaration(p: Parser) -> Code_Declaration:
+  start = p.pos
+  is_nonlocal = peek(p).kind == TokenKind.KW_nonlocal
+  if is_nonlocal: eat(p, TokenKind.KW_nonlocal)
+  is_constant = peek(p).kind == ord('$')
+  if is_constant: eat(p, ord('$'))
+  name = eat(p, TokenKind.IDENTIFIER)
+  type_expr: Code | None = None
+  if peek(p).kind == ord(':'):
+    eat(p, ord(':'))
+    type_expr = parse_expression(p)
+  value_expr: Code | None = None
+  if peek(p).kind == ord('='):
+    eat(p, ord('='))
+    if peek(p).kind == TokenKind.KW_del:
+      token = eat(p, TokenKind.KW_del)
+      value_expr = Code_Uninitialized(token.location, token.length)
+    else:
+      value_expr = parse_expression(p)
+  if type_expr is None and value_expr is None: p.errors.append(Parser.Error(f"A declaration (i.e. x: y = z) must have a type (y) or value (z).", name, traceback.extract_stack()))
+  return Code_Declaration(start, p.pos, is_nonlocal, is_constant, name.as_str(p.src), type_expr, value_expr)
+
 def parse_inline_statement(p: Parser) -> Code:
   start = p.pos
   is_nonlocal = peek(p).kind == TokenKind.KW_nonlocal
   n = 2 if is_nonlocal else 1
   is_constant = peek(p, n).kind == ord('$')
   if is_constant or (peek(p, n).kind == TokenKind.IDENTIFIER and peek(p, n + 1).kind in [ord(':'), ord('=')]):
-    if is_nonlocal: eat(p, TokenKind.KW_nonlocal)
-    if is_constant: eat(p, ord('$'))
-    name = eat(p, TokenKind.IDENTIFIER)
-    type_expr: Code | None = None
-    if peek(p).kind == ord(':'):
-      eat(p, ord(':'))
-      type_expr = parse_expression(p)
-    value_expr: Code | None = None
-    if peek(p).kind == ord('='):
-      eat(p, ord('='))
-      if peek(p).kind == TokenKind.KW_del:
-        token = eat(p, TokenKind.KW_del)
-        value_expr = Code_Uninitialized(token.location, token.length)
+    return parse_declaration(p)
+  elif peek(p).kind == TokenKind.KW_assert:
+    token = eat(p, TokenKind.KW_assert)
+    condition = parse_expression(p)
+    message: Code | None = None
+    if peek(p).kind == ord(','):
+      eat(p, ord(','))
+      message = parse_expression(p)
+    return Code_Assert(token.location, p.pos, condition, message)
+  elif peek(p).kind == TokenKind.KW_from:
+    token = eat(p, TokenKind.KW_from)
+    is_local = peek(p).kind == ord('.')
+    if is_local: eat(p, ord('.'))
+    path: list[str] = []
+    while True:
+      path.append(eat(p, TokenKind.IDENTIFIER).as_str(p.src))
+      if peek(p).kind == ord('.'): eat(p, ord('.'))
+      else: break
+    eat(p, TokenKind.KW_import)
+    includes: list[str] = []
+    aliases: list[str | None] = []
+    excludes: list[str] = []
+    if peek(p).kind == ord('*'):
+      eat(p, ord('*'))
+      if peek(p).kind == TokenKind.KW_except:
+        eat(p, TokenKind.KW_except)
+        while True:
+          excludes.append(eat(p, TokenKind.IDENTIFIER).as_str(p.src))
+          if peek(p).kind == ord(','): eat(p, ord(','))
+          else: break
+    else:
+      includes.append(eat(p, TokenKind.IDENTIFIER).as_str(p.src))
+      if peek(p).kind == TokenKind.KW_as:
+        eat(p, TokenKind.KW_as)
+        aliases.append(eat(p, TokenKind.IDENTIFIER).as_str(p.src))
       else:
-        value_expr = parse_expression(p)
-    if type_expr is None and value_expr is None: p.errors.append(Parser.Error(f"A declaration (i.e. x: y = z) must have a type (y) or value (z).", name, traceback.extract_stack()))
-    return Code_Declaration(start, p.pos, is_nonlocal, is_constant, name.as_str(p.src), type_expr, value_expr)
+        aliases.append(None)
+    return Code_ImportFrom(token.location, p.pos, is_local, path, includes, aliases, excludes)
+  elif peek(p).kind == TokenKind.KW_import:
+    token = eat(p, TokenKind.KW_import)
+    is_local = peek(p).kind == ord('.')
+    if is_local: eat(p, ord('.'))
+    path: list[str] = []
+    while True:
+      path.append(eat(p, TokenKind.IDENTIFIER).as_str(p.src))
+      if peek(p).kind == ord('.'): eat(p, ord('.'))
+      else: break
+    alias: str | None = None
+    if peek(p).kind == TokenKind.KW_as:
+      eat(p, TokenKind.KW_as)
+      alias = eat(p, TokenKind.IDENTIFIER).as_str(p.src)
+    return Code_Import(token.location, p.pos, is_local, path, alias)
   else:
     result = parse_expression(p)
     if ASSIGN_OPS[peek(p).kind]:
@@ -425,10 +556,63 @@ def parse_line(p: Parser) -> list[Code]:
 
 def parse_block_statement_or_line(p: Parser) -> list[Code]:
   result: list[Code]
-  if peek(p).kind == TokenKind.KW_yield and peek(p, 2).kind == ord(':'):
+  is_nonlocal = peek(p).kind == TokenKind.KW_nonlocal
+  n = 2 if is_nonlocal else 1
+  if peek(p, n).kind == TokenKind.KW_def:
+    if is_nonlocal: eat(p, TokenKind.KW_nonlocal)
+    token = eat(p, TokenKind.KW_def)
+    name = eat(p, TokenKind.IDENTIFIER).as_str(p.src)
+    parameters: list[Code] = []
+    eat(p, ord('('))
+    p.parens += 1
+    while peek(p).kind != ord(')'):
+      parameters.append(parse_declaration(p))
+    p.parens -= 1
+    eat(p, ord(')'))
+    return_type: Code | None = None
+    if peek(p).kind == TokenKind.DASHGT:
+      eat(p, TokenKind.DASHGT)
+      return_type = parse_expression(p)
+    attributes: Code | None = None
+    if peek(p).kind != ord(':'):
+      attributes = parse_expression(p)
+    body = parse_block(p)
+    result = [Code_Procedure(token.location, p.pos, is_nonlocal, name, parameters, return_type, attributes, body)]
+  elif peek(p).kind == TokenKind.KW_yield and peek(p, 2).kind == ord(':'):
     token = eat(p, TokenKind.KW_yield)
     body = parse_block(p)
     result = [Code_Yield(token.location, p.pos, body)]
+  elif peek(p).kind == TokenKind.KW_match:
+    token = eat(p, TokenKind.KW_match)
+    condition: Code | None = None
+    if peek(p).kind != ord(':'):
+      condition = parse_expression(p)
+    branches = parse_block(p)
+    result = [Code_Match(token.location, p.pos, condition, branches)]
+  elif peek(p).kind == TokenKind.KW_case:
+    token = eat(p, TokenKind.KW_case)
+    condition: Code | None = None
+    if peek(p).kind != ord(':'):
+      condition = parse_expression(p)
+    body = parse_block(p)
+    result = [Code_Case(token.location, p.pos, condition, body)]
+  elif peek(p).kind == TokenKind.KW_finally:
+    token = eat(p, TokenKind.KW_finally)
+    body = parse_block(p)
+    result = [Code_Finally(token.location, p.pos, body)]
+  elif peek(p).kind in [TokenKind.KW_if, TokenKind.KW_elif]:
+    token = eat(p, peek(p).kind)
+    condition = parse_expression(p)
+    consequence = parse_block(p)
+    alt: list[Code] = []
+    if peek(p).kind in [TokenKind.KW_elif, TokenKind.KW_else]:
+      is_elif = peek(p).kind == TokenKind.KW_elif
+      if is_elif:
+        alt = parse_block_statement_or_line(p)
+      else:
+        eat(p, TokenKind.KW_else)
+        alt = parse_block(p)
+    result = [Code_If(token.location, p.pos, condition, consequence, alt)]
   else:
     result = parse_line(p)
   return result
@@ -443,7 +627,7 @@ def parse_block_inner(p: Parser) -> list[Code]:
   p.indents.append(indent_token.length)
   while True:
     indent_token = peek(p)
-    if indent_token.kind != TokenKind.INDENT: break
+    if indent_token.kind != TokenKind.INDENT: p.indents.pop(); break
     if indent_token.length != p.indents[-1]:
       if indent_token.length > p.indents[-1]:
         p.errors.append(Parser.Error(f"I expected an indent of length {p.indents[-1]}. Your indent was length {indent_token.length}.", indent_token, traceback.extract_stack()))
@@ -481,6 +665,8 @@ def code_as_string(s: str, code: Code, level: int = 0) -> str:
   if isinstance(code, Code_Literal):
     if isinstance(code.value, str): return f"{'"""' if code.is_thick else '"'}{code.value}{'"""' if code.is_thick else '"'}"
     else: return str(code.value)
+  elif isinstance(code, Code_EnumLiteral):
+    return f".{code.name}"
   elif isinstance(code, Code_Variable):
     return f"{"nonlocal " if code.is_nonlocal else ""}{code.name}"
   elif isinstance(code, Code_Declaration):
@@ -488,6 +674,8 @@ def code_as_string(s: str, code: Code, level: int = 0) -> str:
     if code.type_expr: result += f": {code_as_string(s, code.type_expr, level)}"
     if code.value_expr: result += f" = {code_as_string(s, code.value_expr, level)}"
     return result
+  elif isinstance(code, Code_Procedure):
+    return f"{"nonlocal " if code.is_nonlocal else ""}def {code.name}({", ".join(code_as_string(s, parameter, level) for parameter in code.parameters)}){f" -> {code_as_string(s, code.return_type, level)}" if code.return_type else ""}{code_block_as_string(s, code.body, level)}"
   elif isinstance(code, Code_UnaryOp):
     wrap = isinstance(code.right, Code_BinaryOp)
     space = code.op.as_str(s) == "not"
@@ -505,8 +693,24 @@ def code_as_string(s: str, code: Code, level: int = 0) -> str:
     return f"${code.name}"
   elif isinstance(code, Code_Call):
     return f"{code_as_string(s, code.expression, level)}({", ".join(code_as_string(s, argument, level) for argument in code.arguments)})"
+  elif isinstance(code, Code_AccessorOrCall):
+    return f"{code_as_string(s, code.expression, level)}.{code.name}"
+  elif isinstance(code, Code_Import):
+    return f"import {"." if code.is_local else ""}{".".join(code.path)}{f" as {code.alias}" if code.alias else ""}"
+  elif isinstance(code, Code_ImportFrom):
+    return f"from {"." if code.is_local else ""}{".".join(code.path)} import {f"*{" except " + ", ".join(code.excludes) if len(code.excludes) > 0 else ""}" if len(code.includes) == 0 else ", ".join(f"{name}{f" as {alias}" if alias else ""}" for name, alias in zip(code.includes, code.aliases))}"
+  elif isinstance(code, Code_Assert):
+    return f"assert {code_as_string(s, code.condition, level)}{f", {code_as_string(s, code.message, level)}" if code.message else ""}"
+  elif isinstance(code, Code_Match):
+    return f"match{f" {code_as_string(s, code.condition, level)}" if code.condition else ""}{code_block_as_string(s, code.branches, level)}"
+  elif isinstance(code, Code_Case):
+    return f"case{f" {code_as_string(s, code.condition, level)}" if code.condition else ""}{code_block_as_string(s, code.body, level)}"
   elif isinstance(code, Code_Yield):
     return f"yield{code_block_as_string(src, code.body, level)}"
+  elif isinstance(code, Code_Finally):
+    return f"finally{code_block_as_string(s, code.body, level)}"
+  elif isinstance(code, Code_If):
+    return f"if {code_as_string(s, code.condition, level)}{code_block_as_string(s, code.consequence, level)}{f"else{code_block_as_string(s, code.alt, level)}" if len(code.alt) else ""}"
   else:
     raise NotImplementedError(code.__class__.__name__)
 
