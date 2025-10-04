@@ -1,7 +1,4 @@
-yield:
-  yield: x = 5
-    print(x)
-"""
-Hello, world!
-This is a very long string indeed.
-"""
+$x = 10
+$y = 20
+z = -not x and ~(y + z)
+$q = a not in b

@@ -33,12 +33,13 @@ class TokenKind(IntEnum):
   AMPEQ = 163
   PIPEEQ = 164
   CARETEQ = 165
+  COLONEQ = 166
 
-  LTLTEQ = 166
+  LTLTEQ = 167
   GTGTEQ = 167
-  # SLASHSLASHEQ = 168
-  # STARSTAREQ = 169
-  DOTDOTDOT = 170
+  # SLASHSLASHEQ = 169
+  # STARSTAREQ = 170
+  DOTDOTDOT = 171
 
   KW_False = 192
   KW_None = 193
@@ -77,6 +78,8 @@ class TokenKind(IntEnum):
   KW_while = 226
   KW_with = 227
   KW_yield = 228
+
+  CHEESY_not_in = 248
 
   @staticmethod
   def as_str(kind: int) -> str: return TokenKind(kind).name if kind in TokenKind else f"'{chr(kind)}'"
@@ -124,7 +127,12 @@ def token_at(s: str, p: int) -> Token:
         if test == "def": return Token(TokenKind.KW_def, start, 3)
         if test == "del": return Token(TokenKind.KW_del, start, 3)
         if test == "for": return Token(TokenKind.KW_for, start, 3)
-        if test == "not": return Token(TokenKind.KW_not, start, 3)
+        if test == "not":
+          peek = p
+          while peek < len(s) and s[peek].isspace() and s[peek] != '\n': peek += 1
+          if peek + 1 < len(s) and s[peek:peek + 2] == "in" and (peek + 2 >= len(s) or s[peek + 2].isspace() or s[peek + 2] == '#'):
+            return Token(TokenKind.CHEESY_not_in, start, (peek + 2) - start)
+          return Token(TokenKind.KW_not, start, 3)
         if test == "try": return Token(TokenKind.KW_try, start, 3)
       case 4:
         if test == "None": return Token(TokenKind.KW_None, start, 4)
@@ -194,7 +202,8 @@ def token_at(s: str, p: int) -> Token:
     if test == "&=": return Token(TokenKind.AMPEQ, start, 2)
     if test == "|=": return Token(TokenKind.PIPEEQ, start, 2)
     if test == "^=": return Token(TokenKind.CARETEQ, start, 2)
-  if s[p] in "+-*/%&|~^:=.,;()[]{}<>": return Token(ord(s[p]), start, 1)
+    if test == ":=": return Token(TokenKind.COLONEQ, start, 2)
+  if s[p] in "+-*/%&|~^$:=.,;()[]{}<>": return Token(ord(s[p]), start, 1)
   return Token(TokenKind.ERROR, start, 1)
 
 def print_all_tokens(s: str, p: int = 0) -> None:
@@ -211,11 +220,12 @@ def offset_to_line_col(s: str, p: int) -> tuple[int, int]:
     i += 1; col += 1
   return line, col
 
-PRECEDENCES: list[int] = [0] * 256
+PRECEDENCES: list[int] = [-1] * 256
 PRECEDENCES[TokenKind.KW_or] = 0
 PRECEDENCES[TokenKind.KW_and] = 1
 PRECEDENCES[TokenKind.EQEQ] = 2; PRECEDENCES[TokenKind.BANGEQ] = 2; PRECEDENCES[TokenKind.LTEQ] = 2
 PRECEDENCES[TokenKind.GTEQ] = 2; PRECEDENCES[ord('<')] = 2; PRECEDENCES[ord('>')] = 2
+PRECEDENCES[TokenKind.KW_in] = 2; PRECEDENCES[TokenKind.CHEESY_not_in] = 2
 PRECEDENCES[ord('|')] = 3
 PRECEDENCES[ord('^')] = 4
 PRECEDENCES[ord('&')] = 5
@@ -224,7 +234,6 @@ PRECEDENCES[ord('+')] = 7; PRECEDENCES[ord('-')] = 7
 PRECEDENCES[ord('*')] = 8; PRECEDENCES[ord('/')] = 8; PRECEDENCES[ord('%')] = 8
 
 ASSIGN_OPS: list[int] = [False] * 256
-ASSIGN_OPS[ord('=')] = True
 ASSIGN_OPS[TokenKind.PLUSEQ] = True
 ASSIGN_OPS[TokenKind.DASHEQ] = True
 ASSIGN_OPS[TokenKind.STAREQ] = True
@@ -233,6 +242,7 @@ ASSIGN_OPS[TokenKind.PERCENTEQ] = True
 ASSIGN_OPS[TokenKind.AMPEQ] = True
 ASSIGN_OPS[TokenKind.PIPEEQ] = True
 ASSIGN_OPS[TokenKind.CARETEQ] = True
+ASSIGN_OPS[TokenKind.COLONEQ] = True
 ASSIGN_OPS[TokenKind.LTLTEQ] = True
 ASSIGN_OPS[TokenKind.GTGTEQ] = True
 
@@ -257,6 +267,10 @@ class Code_Declaration(Code):
   name: str
   type_expr: Code | None
   value_expr: Code | None
+@dataclass
+class Code_UnaryOp(Code):
+  op: Token
+  right: Code
 @dataclass
 class Code_BinaryOp(Code):
   left: Code
@@ -321,6 +335,18 @@ def parse_leaf(p: Parser) -> Code:
     token = eat(p, TokenKind.THICK_STRING)
     value = token.as_str(p.src)[3:-3]
     result = Code_Literal(token.location, token.length, True, value)
+  elif peek(p).kind in [ord('-'), ord('~')]:
+    token = eat(p, peek(p).kind)
+    right = parse_leaf(p)
+    result = Code_UnaryOp(token.location, p.pos, token, right)
+  elif peek(p).kind == TokenKind.KW_not:
+    token = eat(p, TokenKind.KW_not)
+    right = parse_expression(p, PRECEDENCES[ord('<')])
+    result = Code_UnaryOp(token.location, p.pos, token, right)
+  elif peek(p).kind == ord('('):
+    eat(p, ord('('))
+    result = parse_expression(p)
+    eat(p, ord(')'))
   if result is None:
     p.errors.append(Parser.Error(f"I do not know of an expresion that starts with {TokenKind.as_str(peek(p).kind)}.", peek(p), traceback.extract_stack()))
     result = Code_Error(p.pos, p.pos)
@@ -340,7 +366,7 @@ def parse_leaf(p: Parser) -> Code:
 
 def parse_expression(p: Parser, min_prec: int = 0) -> Code:
   left = parse_leaf(p)
-  while peek(p).kind in PRECEDENCES and PRECEDENCES[peek(p).kind] >= min_prec:
+  while PRECEDENCES[peek(p).kind] >= 0 and PRECEDENCES[peek(p).kind] >= min_prec:
     op = eat(p, peek(p).kind)
     right = parse_expression(p, PRECEDENCES[op.kind])
     left = Code_BinaryOp(left.start_location, p.pos, left, op, right)
@@ -348,12 +374,30 @@ def parse_expression(p: Parser, min_prec: int = 0) -> Code:
 
 def parse_inline_statement(p: Parser) -> Code:
   start = p.pos
-  result = parse_expression(p)
-  if ASSIGN_OPS[peek(p).kind]:
-    op = eat(p, peek(p).kind)
-    right = parse_expression(p)
-    result = Code_BinaryOp(start, p.pos, result, op, right)
-  return result
+  is_nonlocal = peek(p).kind == TokenKind.KW_nonlocal
+  n = 2 if is_nonlocal else 1
+  is_constant = peek(p, n).kind == ord('$')
+  if is_constant or (peek(p, n).kind == TokenKind.IDENTIFIER and peek(p, n + 1).kind in [ord(':'), ord('=')]):
+    if is_nonlocal: eat(p, TokenKind.KW_nonlocal)
+    if is_constant: eat(p, ord('$'))
+    name = eat(p, TokenKind.IDENTIFIER)
+    type_expr: Code | None = None
+    if peek(p).kind == ord(':'):
+      eat(p, ord(':'))
+      type_expr = parse_expression(p)
+    value_expr: Code | None = None
+    if peek(p).kind == ord('='):
+      eat(p, ord('='))
+      value_expr = parse_expression(p)
+    if type_expr is None and value_expr is None: p.errors.append(Parser.Error(f"A declaration (i.e. x: y = z) must have a type (y) or value (z).", name, traceback.extract_stack()))
+    return Code_Declaration(start, p.pos, is_nonlocal, is_constant, name.as_str(p.src), type_expr, value_expr)
+  else:
+    result = parse_expression(p)
+    if ASSIGN_OPS[peek(p).kind]:
+      op = eat(p, peek(p).kind)
+      right = parse_expression(p)
+      result = Code_BinaryOp(start, p.pos, result, op, right)
+    return result
 
 def parse_line(p: Parser) -> list[Code]:
   line: list[Code] = []
@@ -424,6 +468,15 @@ def code_as_string(s: str, code: Code, level: int = 0) -> str:
     else: return str(code.value)
   elif isinstance(code, Code_Variable):
     return f"{"nonlocal " if code.is_nonlocal else ""}{code.name}"
+  elif isinstance(code, Code_Declaration):
+    result = f"{"nonlocal " if code.is_nonlocal else ""}{"$" if code.is_constant else ""}{code.name}"
+    if code.type_expr: result += f": {code_as_string(s, code.type_expr, level)}"
+    if code.value_expr: result += f" = {code_as_string(s, code.value_expr, level)}"
+    return result
+  elif isinstance(code, Code_UnaryOp):
+    wrap = isinstance(code.right, Code_BinaryOp)
+    space = code.op.as_str(s) == "not"
+    return f"{code.op.as_str(s)}{" " if space else ""}{"(" if wrap else ""}{code_as_string(src, code.right, level)}{")" if wrap else ""}"
   elif isinstance(code, Code_BinaryOp):
     left_wrap = isinstance(code.left, Code_BinaryOp) and PRECEDENCES[code.left.op.kind] < PRECEDENCES[code.op.kind]
     right_wrap = isinstance(code.right, Code_BinaryOp) and PRECEDENCES[code.right.op.kind] < PRECEDENCES[code.op.kind]
@@ -459,5 +512,5 @@ if __name__ == "__main__":
   else:
     e = list(enumerate(module))
     random.shuffle(e) # to help test out-of-order execution before parallelism.
-    for i, code in  e:
+    for i, code in e:
       print(f"# {i}\n" + code_as_string(src, code))
