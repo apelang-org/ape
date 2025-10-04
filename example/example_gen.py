@@ -35,8 +35,11 @@ def colorize(s: str) -> str:
 
 with open("example.ape") as f: src = f.read().strip()
 
+sponsor = """\n\n# Click here to sponsor @dawsonfrakes on GitHub"""
+
 with open("example.svg", "w") as f:
-  lines = src.split('\n')
+  src = src.strip()
+  lines = (src + sponsor).strip().split('\n')
   pad = 7
   w = max(len(line.rstrip()) + 1 for line in lines) * 7 + pad * 2
   h = len(lines) * 15 + pad * 2
@@ -45,7 +48,7 @@ with open("example.svg", "w") as f:
 <foreignObject width="{w}" height="{h}">
   <div xmlns="http://www.w3.org/1999/xhtml">
     <div style="height: {h-pad*2}px; background-color: {"#3B567E"}; font-family: monospace; border-radius: {pad}px; padding: {pad}px;">
-      <div style="white-space: pre;">{colorize(src.strip())}</div>
+      <div style="white-space: pre;">{colorize(src) + f"""<a href="https://github.com/sponsors/dawsonfrakes?o=esb">{colorize(sponsor)}</a>"""}</div>
     </div>
   </div>
 </foreignObject>
