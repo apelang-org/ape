@@ -2,3 +2,5 @@ $x = 10
 $y = 20
 z = -not x and ~(y + z)
 $q = a not in b
+
+Q: $T = del

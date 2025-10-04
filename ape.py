@@ -277,6 +277,11 @@ class Code_BinaryOp(Code):
   op: Token
   right: Code
 @dataclass
+class Code_Uninitialized(Code): pass
+@dataclass
+class Code_TypeInstantiation(Code):
+  name: str
+@dataclass
 class Code_Yield(Code):
   body: list[Code]
 @dataclass
@@ -317,12 +322,18 @@ def eat(p: Parser, expect: int) -> Token:
 def parse_leaf(p: Parser) -> Code:
   result: Code | None = None
   is_nonlocal = peek(p).kind == TokenKind.KW_nonlocal
-  n = 2 if is_nonlocal else 1
+  is_constant = peek(p).kind == ord('$')
+  n = 2 if is_nonlocal or is_constant else 1
   if peek(p, n).kind == TokenKind.IDENTIFIER:
     start = p.pos
-    if is_nonlocal: eat(p, TokenKind.KW_nonlocal)
-    name = eat(p, TokenKind.IDENTIFIER).as_str(p.src)
-    result = Code_Variable(start, p.pos, is_nonlocal, name)
+    if is_constant:
+      eat(p, ord('$'))
+      name = eat(p, TokenKind.IDENTIFIER).as_str(p.src)
+      return Code_TypeInstantiation(start, p.pos, name)
+    else:
+      if is_nonlocal: eat(p, TokenKind.KW_nonlocal)
+      name = eat(p, TokenKind.IDENTIFIER).as_str(p.src)
+      result = Code_Variable(start, p.pos, is_nonlocal, name)
   elif peek(p).kind == TokenKind.INTEGER:
     token = eat(p, TokenKind.INTEGER)
     value = int(token.as_str(p.src), base=0)
@@ -388,7 +399,11 @@ def parse_inline_statement(p: Parser) -> Code:
     value_expr: Code | None = None
     if peek(p).kind == ord('='):
       eat(p, ord('='))
-      value_expr = parse_expression(p)
+      if peek(p).kind == TokenKind.KW_del:
+        token = eat(p, TokenKind.KW_del)
+        value_expr = Code_Uninitialized(token.location, token.length)
+      else:
+        value_expr = parse_expression(p)
     if type_expr is None and value_expr is None: p.errors.append(Parser.Error(f"A declaration (i.e. x: y = z) must have a type (y) or value (z).", name, traceback.extract_stack()))
     return Code_Declaration(start, p.pos, is_nonlocal, is_constant, name.as_str(p.src), type_expr, value_expr)
   else:
@@ -484,6 +499,10 @@ def code_as_string(s: str, code: Code, level: int = 0) -> str:
     result += f" {code.op.as_str(src)} "
     result += f"{"(" if right_wrap else ""}{code_as_string(src, code.right, level)}{")" if right_wrap else ""}"
     return result
+  elif isinstance(code, Code_Uninitialized):
+    return "del"
+  elif isinstance(code, Code_TypeInstantiation):
+    return f"${code.name}"
   elif isinstance(code, Code_Call):
     return f"{code_as_string(s, code.expression, level)}({", ".join(code_as_string(s, argument, level) for argument in code.arguments)})"
   elif isinstance(code, Code_Yield):
