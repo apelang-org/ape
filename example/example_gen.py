@@ -36,7 +36,6 @@ def colorize(s: str) -> str:
 with open("example.ape") as f: src = f.read().strip()
 
 with open("example.svg", "w") as f:
-  src = src.strip()
   lines = src.split('\n')
   pad = 7
   w = max(len(line.rstrip()) + 1 for line in lines) * 7 + pad * 2

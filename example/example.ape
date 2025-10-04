@@ -1,6 +1,8 @@
 # Ape: A systems-level programming language
 # that is fast to write, compile, and run.
 
+# Arbitrary compile-time execution
+# produces performant code.
 def debug_break():
   yield: match:
     case __comptime__:      yield: compiler.debug_break()
@@ -20,6 +22,7 @@ def main():
   finally: q += 10 # Deferred execution
   print("Hello, world!")
 
+# Compiler is just a library
 yield: if __name__ == "__main__":
   exe = compiler.compile(
     "MyExecutable",
@@ -30,6 +33,7 @@ yield: if __name__ == "__main__":
     exe_format=.PE64)
   assert exe.name == "MyExecutable.exe"
 
+# Out-of-order declarations
 from basic import *
 import compiler
 

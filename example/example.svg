@@ -1,11 +1,13 @@
 
-<svg width="420" height="554" xmlns="http://www.w3.org/2000/svg">
-<foreignObject width="420" height="554">
+<svg width="420" height="614" xmlns="http://www.w3.org/2000/svg">
+<foreignObject width="420" height="614">
   <div xmlns="http://www.w3.org/1999/xhtml">
-    <div style="height: 540px; background-color: #3B567E; font-family: monospace; border-radius: 7px; padding: 7px;">
+    <div style="height: 600px; background-color: #3B567E; font-family: monospace; border-radius: 7px; padding: 7px;">
       <div style="white-space: pre;"><span style="color: #90AECC;"># Ape: A systems-level programming language</span>
 <span style="color: #90AECC;"># that is fast to write, compile, and run.</span>
 
+<span style="color: #90AECC;"># Arbitrary compile-time execution</span>
+<span style="color: #90AECC;"># produces performant code.</span>
 <span style="color: #FE9494;">def</span> <span style="color: white;">debug_break</span><span style="color: aqua;">():</span>
   <span style="color: #FE9494;">yield</span><span style="color: aqua;">:</span> <span style="color: #FE9494;">match</span><span style="color: aqua;">:</span>
     <span style="color: #FE9494;">case</span> <span style="color: #E6C2ED;">__comptime__</span><span style="color: aqua;">:</span>      <span style="color: #FE9494;">yield</span><span style="color: aqua;">:</span> <span style="color: #E6C2ED;">compiler</span><span style="color: aqua;">.</span><span style="color: white;">debug_break</span><span style="color: aqua;">()</span>
@@ -25,6 +27,7 @@
   <span style="color: #FE9494;">finally</span><span style="color: aqua;">:</span> <span style="color: #E6C2ED;">q</span> <span style="color: aqua;">+=</span> <span style="color: #FFB6C1">10</span> <span style="color: #90AECC;"># Deferred execution</span>
   <span style="color: white;">print</span><span style="color: aqua;">(</span><span style="color: #FFB6C1">"Hello, world!"</span><span style="color: aqua;">)</span>
 
+<span style="color: #90AECC;"># Compiler is just a library</span>
 <span style="color: #FE9494;">yield</span><span style="color: aqua;">:</span> <span style="color: #FE9494;">if</span> <span style="color: #E6C2ED;">__name__</span> <span style="color: aqua;">==</span> <span style="color: #FFB6C1">"__main__"</span><span style="color: aqua;">:</span>
   <span style="color: #E6C2ED;">exe</span> <span style="color: aqua;">=</span> <span style="color: #E6C2ED;">compiler</span><span style="color: aqua;">.</span><span style="color: white;">compile</span><span style="color: aqua;">(</span>
     <span style="color: #FFB6C1">"MyExecutable"</span><span style="color: aqua;">,</span>
@@ -35,6 +38,7 @@
     <span style="color: #E6C2ED;">exe_format</span><span style="color: aqua;">=.</span><span style="color: #E6C2ED;">PE64</span><span style="color: aqua;">)</span>
   <span style="color: #FE9494;">assert</span> <span style="color: #E6C2ED;">exe</span><span style="color: aqua;">.</span><span style="color: #E6C2ED;">name</span> <span style="color: aqua;">==</span> <span style="color: #FFB6C1">"MyExecutable.exe"</span>
 
+<span style="color: #90AECC;"># Out-of-order declarations</span>
 <span style="color: #FE9494;">from</span> <span style="color: #E6C2ED;">basic</span> <span style="color: #FE9494;">import</span> <span style="color: aqua;">*</span>
 <span style="color: #FE9494;">import</span> <span style="color: #E6C2ED;">compiler</span>
 
