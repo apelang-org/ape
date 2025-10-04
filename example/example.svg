@@ -1,0 +1,43 @@
+
+<svg width="420" height="524" xmlns="http://www.w3.org/2000/svg">
+<foreignObject width="420" height="524">
+  <div xmlns="http://www.w3.org/1999/xhtml">
+    <div style="height: 510px; background-color: #3B567E; font-family: monospace; border-radius: 7px; padding: 7px;">
+      <div style="white-space: pre;"><span style="color: #90AECC;"># Ape: A systems-level programming language</span>
+<span style="color: #90AECC;"># that is fast to write, compile, and run.</span>
+
+<span style="color: #FE9494;">def</span> <span style="color: white;">debug_break</span><span style="color: aqua;">():</span>
+  <span style="color: #FE9494;">yield</span><span style="color: aqua;">:</span> <span style="color: #FE9494;">match</span><span style="color: aqua;">:</span>
+    <span style="color: #FE9494;">case</span> <span style="color: #E6C2ED;">__comptime__</span><span style="color: aqua;">:</span>      <span style="color: #FE9494;">yield</span><span style="color: aqua;">:</span> <span style="color: #E6C2ED;">compiler</span><span style="color: aqua;">.</span><span style="color: white;">debug_break</span><span style="color: aqua;">()</span>
+    <span style="color: #FE9494;">case</span> <span style="color: #E6C2ED;">__cpu__</span> <span style="color: aqua;">==</span> <span style="color: aqua;">.</span><span style="color: #E6C2ED;">ARM64</span><span style="color: aqua;">:</span> <span style="color: #FE9494;">yield</span><span style="color: aqua;">:</span> <span style="color: white;">__asm__</span><span style="color: aqua;">(</span><span style="color: #FFB6C1">"brk"</span><span style="color: aqua;">)</span>
+    <span style="color: #FE9494;">case</span> <span style="color: #E6C2ED;">__cpu__</span> <span style="color: aqua;">==</span> <span style="color: aqua;">.</span><span style="color: #E6C2ED;">RV64</span><span style="color: aqua;">:</span>  <span style="color: #FE9494;">yield</span><span style="color: aqua;">:</span> <span style="color: white;">__asm__</span><span style="color: aqua;">(</span><span style="color: #FFB6C1">"ebreak"</span><span style="color: aqua;">)</span>
+    <span style="color: #FE9494;">case</span> <span style="color: #E6C2ED;">__cpu__</span> <span style="color: aqua;">==</span> <span style="color: aqua;">.</span><span style="color: #E6C2ED;">X64</span><span style="color: aqua;">:</span>   <span style="color: #FE9494;">yield</span><span style="color: aqua;">:</span> <span style="color: white;">__asm__</span><span style="color: aqua;">(</span><span style="color: #FFB6C1">"int3"</span><span style="color: aqua;">)</span>
+    <span style="color: #FE9494;">case</span><span style="color: aqua;">:</span> <span style="color: #FE9494;">assert</span> <span style="color: #FE9494;">False</span>
+
+<span style="color: #90AECC;"># Constants are just compile-time variables.</span>
+<span style="color: #FE9494;">yield</span><span style="color: aqua;">:</span> <span style="color: #FE9494;">raise</span> <span style="color: #FE9494;">if</span> <span style="color: #E6C2ED;">__os__</span> <span style="color: aqua;">==</span> <span style="color: aqua;">.</span><span style="color: #E6C2ED;">WINDOWS</span><span style="color: aqua;">:</span>
+  <span style="color: #E6C2ED;">STD_INPUT_HANDLE</span> <span style="color: aqua;">=</span> <span style="color: aqua;">-</span><span style="color: #FFB6C1">10</span>
+  <span style="color: #E6C2ED;">STD_OUTPUT_HANDLE</span> <span style="color: aqua;">=</span> <span style="color: aqua;">-</span><span style="color: #FFB6C1">11</span>
+  <span style="color: #E6C2ED;">STD_ERROR_HANDLE</span> <span style="color: aqua;">=</span> <span style="color: aqua;">-</span><span style="color: #FFB6C1">12</span>
+
+<span style="color: #FE9494;">def</span> <span style="color: white;">main</span><span style="color: aqua;">():</span>
+  <span style="color: #E6C2ED;">q</span> <span style="color: aqua;">=</span> <span style="color: #FFB6C1">5</span>
+  <span style="color: #FE9494;">finally</span><span style="color: aqua;">:</span> <span style="color: #E6C2ED;">q</span> <span style="color: aqua;">+=</span> <span style="color: #FFB6C1">10</span> <span style="color: #90AECC;"># Deferred execution</span>
+  <span style="color: white;">print</span><span style="color: aqua;">(</span><span style="color: #FFB6C1">"Hello, world!"</span><span style="color: aqua;">)</span>
+
+<span style="color: #FE9494;">yield</span><span style="color: aqua;">:</span> <span style="color: #FE9494;">if</span> <span style="color: #E6C2ED;">__name__</span> <span style="color: aqua;">==</span> <span style="color: #FFB6C1">"__main__"</span><span style="color: aqua;">:</span>
+  <span style="color: #E6C2ED;">exe</span> <span style="color: aqua;">=</span> <span style="color: #E6C2ED;">compiler</span><span style="color: aqua;">.</span><span style="color: white;">compile</span><span style="color: aqua;">(</span>
+    <span style="color: #FFB6C1">"MyExecutable"</span><span style="color: aqua;">,</span>
+    <span style="color: #E6C2ED;">output</span><span style="color: aqua;">=.</span><span style="color: #E6C2ED;">EXECUTABLE</span><span style="color: aqua;">,</span>
+    <span style="color: #E6C2ED;">entry</span><span style="color: aqua;">=</span><span style="color: #E6C2ED;">main</span><span style="color: aqua;">,</span>
+    <span style="color: #E6C2ED;">os_target</span><span style="color: aqua;">=.</span><span style="color: #E6C2ED;">WINDOWS</span><span style="color: aqua;">,</span>
+    <span style="color: #E6C2ED;">cpu_target</span><span style="color: aqua;">=.</span><span style="color: #E6C2ED;">X64</span><span style="color: aqua;">,</span>
+    <span style="color: #E6C2ED;">exe_format</span><span style="color: aqua;">=.</span><span style="color: #E6C2ED;">PE64</span><span style="color: aqua;">)</span>
+  <span style="color: #FE9494;">assert</span> <span style="color: #E6C2ED;">exe</span><span style="color: aqua;">.</span><span style="color: #E6C2ED;">name</span> <span style="color: aqua;">==</span> <span style="color: #FFB6C1">"MyExecutable.exe"</span>
+
+<span style="color: #FE9494;">from</span> <span style="color: #E6C2ED;">basic</span> <span style="color: #FE9494;">import</span> <span style="color: aqua;">*</span>
+<span style="color: #FE9494;">import</span> <span style="color: #E6C2ED;">compiler</span></div>
+    </div>
+  </div>
+</foreignObject>
+</svg>

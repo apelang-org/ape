@@ -1,0 +1,34 @@
+# Ape: A systems-level programming language
+# that is fast to write, compile, and run.
+
+def debug_break():
+  yield: match:
+    case __comptime__:      yield: compiler.debug_break()
+    case __cpu__ == .ARM64: yield: __asm__("brk")
+    case __cpu__ == .RV64:  yield: __asm__("ebreak")
+    case __cpu__ == .X64:   yield: __asm__("int3")
+    case: assert False
+
+# Constants are just compile-time variables.
+yield: raise if __os__ == .WINDOWS:
+  STD_INPUT_HANDLE = -10
+  STD_OUTPUT_HANDLE = -11
+  STD_ERROR_HANDLE = -12
+
+def main():
+  q = 5
+  finally: q += 10 # Deferred execution
+  print("Hello, world!")
+
+yield: if __name__ == "__main__":
+  exe = compiler.compile(
+    "MyExecutable",
+    output=.EXECUTABLE,
+    entry=main,
+    os_target=.WINDOWS,
+    cpu_target=.X64,
+    exe_format=.PE64)
+  assert exe.name == "MyExecutable.exe"
+
+from basic import *
+import compiler
