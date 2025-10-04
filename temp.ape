@@ -1,0 +1,7 @@
+yield:
+  yield: x = 5
+    print(x)
+"""
+Hello, world!
+This is a very long string indeed.
+"""
