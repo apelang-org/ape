@@ -1,1 +1,1 @@
-[<object data="./example/example.svg" type="image/svg+xml"></object>](https://github.com/sponsors/dawsonfrakes?o=esb)
+[<embed data="./example/example.svg"></embed>](https://github.com/sponsors/dawsonfrakes?o=esb)
