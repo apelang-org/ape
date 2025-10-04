@@ -32,3 +32,5 @@ yield: if __name__ == "__main__":
 
 from basic import *
 import compiler
+
+# Click here to sponsor this project on GitHub!

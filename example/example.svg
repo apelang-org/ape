@@ -36,9 +36,9 @@
   <span style="color: #FE9494;">assert</span> <span style="color: #E6C2ED;">exe</span><span style="color: aqua;">.</span><span style="color: #E6C2ED;">name</span> <span style="color: aqua;">==</span> <span style="color: #FFB6C1">"MyExecutable.exe"</span>
 
 <span style="color: #FE9494;">from</span> <span style="color: #E6C2ED;">basic</span> <span style="color: #FE9494;">import</span> <span style="color: aqua;">*</span>
-<span style="color: #FE9494;">import</span> <span style="color: #E6C2ED;">compiler</span><a href="https://github.com/sponsors/dawsonfrakes?o=esb">
+<span style="color: #FE9494;">import</span> <span style="color: #E6C2ED;">compiler</span>
 
-<span style="color: #90AECC;"># Click here to sponsor @dawsonfrakes on GitHub</span></a></div>
+<span style="color: #90AECC;"># Click here to sponsor this project on GitHub!</span></div>
     </div>
   </div>
 </foreignObject>
