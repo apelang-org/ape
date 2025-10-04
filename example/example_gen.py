@@ -35,7 +35,7 @@ def colorize(s: str) -> str:
 
 with open("example.ape") as f: src = f.read().strip()
 
-with open("example.svg", "w") as f:
+with open("../README.md", "w") as f:
   lines = src.split('\n')
   pad = 7
   ft = 24
@@ -58,3 +58,4 @@ with open("example.svg", "w") as f:
 </foreignObject>
 </svg>
 """)
+# https://github.com/sponsors/dawsonfrakes?o=esb
