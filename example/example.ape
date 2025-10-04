@@ -2,7 +2,7 @@
 # that is fast to write, compile, and run.
 
 # Arbitrary compile-time execution
-# produces performant code.
+# produces performant executables
 def debug_break():
   yield: match:
     case __comptime__:      yield: compiler.debug_break()
@@ -11,18 +11,21 @@ def debug_break():
     case __cpu__ == .X64:   yield: __asm__("int3")
     case: assert False
 
-# Constants are just compile-time variables.
+# "Constants" are simply variables at compile-time
 yield: raise if __os__ == .WINDOWS:
   STD_INPUT_HANDLE = -10
   STD_OUTPUT_HANDLE = -11
   STD_ERROR_HANDLE = -12
 
+# Lexical scoping
+q = 10
 def main():
   q = 5
   finally: q += 10 # Deferred execution
   print("Hello, world!")
+assert q == 10
 
-# Compiler is just a library
+# Compiler is a library
 yield: if __name__ == "__main__":
   exe = compiler.compile(
     "MyExecutable",
