@@ -1,8 +1,7 @@
-# Ape: A systems-level programming language
-# that is fast to write, compile, and run.
+$x = 5 + 5 * 5
 
-# Arbitrary compile-time execution
-# produces performant executables
+def hello[]: pass
+
 def debug_break():
   yield: match:
     case __comptime__:      yield: compiler.debug_break()
@@ -11,15 +10,15 @@ def debug_break():
     case __cpu__ == .X64:   yield: __asm__("int3")
     case: assert False
 
-# Lexical scoping
+in "y = 5"
+
 q = 10
 def main():
   q = 5
-  finally: q += 10 # Deferred execution
+  finally: q += 10
   print("Hello, world!")
 assert q == 10
 
-# Compiler is a library
 yield: if __name__ == "__main__":
   exe = compiler.compile(
     "MyExecutable",
@@ -30,6 +29,5 @@ yield: if __name__ == "__main__":
     exe_format=.PE64)
   assert exe.name == "MyExecutable.exe"
 
-# Out-of-order declarations
-from basic import *
+from basic import * except a, b, c
 import compiler

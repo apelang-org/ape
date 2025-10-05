@@ -48,7 +48,7 @@ class TokenKind(IntEnum):
   KW_as = 196
   KW_assert = 197
   # KW_async = 198
-  KW_await = 199
+  # KW_await = 199
   KW_break = 200
   KW_case = 201
   KW_class = 202
@@ -146,7 +146,6 @@ def token_at(s: str, p: int, disable_whitespace: bool = False) -> Token:
         if test == "with": return Token(TokenKind.KW_with, start, 4)
       case 5:
         if test == "False": return Token(TokenKind.KW_False, start, 5)
-        if test == "await": return Token(TokenKind.KW_await, start, 5)
         if test == "break": return Token(TokenKind.KW_break, start, 5)
         if test == "class": return Token(TokenKind.KW_class, start, 5)
         if test == "match": return Token(TokenKind.KW_match, start, 5)
@@ -221,18 +220,18 @@ def offset_to_line_col(s: str, p: int) -> tuple[int, int]:
     i += 1; col += 1
   return line, col
 
-PRECEDENCES: list[int] = [-1] * 256
-PRECEDENCES[TokenKind.KW_or] = 0
-PRECEDENCES[TokenKind.KW_and] = 1
-PRECEDENCES[TokenKind.EQEQ] = 2; PRECEDENCES[TokenKind.BANGEQ] = 2; PRECEDENCES[TokenKind.LTEQ] = 2
-PRECEDENCES[TokenKind.GTEQ] = 2; PRECEDENCES[ord('<')] = 2; PRECEDENCES[ord('>')] = 2
-PRECEDENCES[TokenKind.KW_in] = 2; PRECEDENCES[TokenKind.CHEESY_not_in] = 2
-PRECEDENCES[ord('|')] = 3
-PRECEDENCES[ord('^')] = 4
-PRECEDENCES[ord('&')] = 5
-PRECEDENCES[TokenKind.LTLT] = 6; PRECEDENCES[TokenKind.GTGT] = 6
-PRECEDENCES[ord('+')] = 7; PRECEDENCES[ord('-')] = 7
-PRECEDENCES[ord('*')] = 8; PRECEDENCES[ord('/')] = 8; PRECEDENCES[ord('%')] = 8
+PRECEDENCES: list[int] = [0] * 256
+PRECEDENCES[TokenKind.KW_or] = 1
+PRECEDENCES[TokenKind.KW_and] = 2
+PRECEDENCES[TokenKind.EQEQ] = 3; PRECEDENCES[TokenKind.BANGEQ] = 3; PRECEDENCES[TokenKind.LTEQ] = 3
+PRECEDENCES[TokenKind.GTEQ] = 3; PRECEDENCES[ord('<')] = 3; PRECEDENCES[ord('>')] = 3
+PRECEDENCES[TokenKind.KW_in] = 3; PRECEDENCES[TokenKind.CHEESY_not_in] = 3
+PRECEDENCES[ord('|')] = 4
+PRECEDENCES[ord('^')] = 5
+PRECEDENCES[ord('&')] = 6
+PRECEDENCES[TokenKind.LTLT] = 7; PRECEDENCES[TokenKind.GTGT] = 7
+PRECEDENCES[ord('+')] = 9; PRECEDENCES[ord('-')] = 9
+PRECEDENCES[ord('*')] = 9; PRECEDENCES[ord('/')] = 9; PRECEDENCES[ord('%')] = 9
 
 ASSIGN_OPS: list[int] = [False] * 256
 ASSIGN_OPS[TokenKind.PLUSEQ] = True
@@ -275,6 +274,7 @@ class Code_Declaration(Code):
 class Code_Procedure(Code):
   is_nonlocal: bool
   name: str
+  is_brackets: bool
   parameters: list[Code]
   return_type: Code | None
   attributes: Code | None
@@ -306,6 +306,10 @@ class Code_Import(Code):
   path: list[str]
   alias: str | None
 @dataclass
+class Code_In(Code):
+  is_nonlocal: bool
+  expression: Code
+@dataclass
 class Code_Assert(Code):
   condition: Code
   message: Code | None
@@ -327,7 +331,10 @@ class Code_If(Code):
   alt: list[Code]
 @dataclass
 class Code_Finally(Code):
+  is_nonlocal: bool
   body: list[Code]
+@dataclass
+class Code_Pass(Code): pass
 @dataclass
 class Code_Call(Code):
   expression: Code
@@ -386,28 +393,28 @@ def parse_leaf(p: Parser) -> Code:
   elif peek(p).kind == TokenKind.INTEGER:
     token = eat(p, TokenKind.INTEGER)
     value = int(token.as_str(p.src), base=0)
-    result = Code_Literal(token.location, token.length, False, value)
+    result = Code_Literal(token.location, token.location + token.length, False, value)
   elif peek(p).kind == TokenKind.STRING:
     token = eat(p, TokenKind.STRING)
     value = token.as_str(p.src)[1:-1]
-    result = Code_Literal(token.location, token.length, False, value)
+    result = Code_Literal(token.location, token.location + token.length, False, value)
   elif peek(p).kind == TokenKind.THICK_STRING:
     token = eat(p, TokenKind.THICK_STRING)
     value = token.as_str(p.src)[3:-3]
-    result = Code_Literal(token.location, token.length, True, value)
+    result = Code_Literal(token.location, token.location + token.length, True, value)
   elif peek(p).kind == ord('.'):
     token = eat(p, ord('.'))
     name = eat(p, TokenKind.IDENTIFIER).as_str(p.src)
     result = Code_EnumLiteral(token.location, p.pos, name)
   elif peek(p).kind == TokenKind.KW_False:
     token = eat(p, TokenKind.KW_False)
-    result = Code_Literal(token.location, token.length, False, False)
+    result = Code_Literal(token.location, token.location + token.length, False, False)
   elif peek(p).kind == TokenKind.KW_True:
     token = eat(p, TokenKind.KW_True)
-    result = Code_Literal(token.location, token.length, False, True)
+    result = Code_Literal(token.location, token.location + token.length, False, True)
   elif peek(p).kind == TokenKind.KW_None:
     token = eat(p, TokenKind.KW_None)
-    result = Code_Literal(token.location, token.length, False, None)
+    result = Code_Literal(token.location, token.location + token.length, False, None)
   elif peek(p).kind in [ord('-'), ord('~')]:
     token = eat(p, peek(p).kind)
     right = parse_leaf(p)
@@ -451,7 +458,7 @@ def parse_leaf(p: Parser) -> Code:
 
 def parse_expression(p: Parser, min_prec: int = 0) -> Code:
   left = parse_leaf(p)
-  while PRECEDENCES[peek(p).kind] >= 0 and PRECEDENCES[peek(p).kind] >= min_prec:
+  while PRECEDENCES[peek(p).kind] > 0 and PRECEDENCES[peek(p).kind] >= min_prec:
     op = eat(p, peek(p).kind)
     right = parse_expression(p, PRECEDENCES[op.kind])
     left = Code_BinaryOp(left.start_location, p.pos, left, op, right)
@@ -473,7 +480,7 @@ def parse_declaration(p: Parser) -> Code_Declaration:
     eat(p, ord('='))
     if peek(p).kind == TokenKind.KW_del:
       token = eat(p, TokenKind.KW_del)
-      value_expr = Code_Uninitialized(token.location, token.length)
+      value_expr = Code_Uninitialized(token.location, token.location + token.length)
     else:
       value_expr = parse_expression(p)
   if type_expr is None and value_expr is None: p.errors.append(Parser.Error(f"A declaration (i.e. x: y = z) must have a type (y) or value (z).", name, traceback.extract_stack()))
@@ -486,6 +493,10 @@ def parse_inline_statement(p: Parser) -> Code:
   is_constant = peek(p, n).kind == ord('$')
   if is_constant or (peek(p, n).kind == TokenKind.IDENTIFIER and peek(p, n + 1).kind in [ord(':'), ord('=')]):
     return parse_declaration(p)
+  elif peek(p, n).kind == TokenKind.KW_in:
+    token = eat(p, TokenKind.KW_in)
+    expression = parse_expression(p)
+    return Code_In(token.location, p.pos, is_nonlocal, expression)
   elif peek(p).kind == TokenKind.KW_assert:
     token = eat(p, TokenKind.KW_assert)
     condition = parse_expression(p)
@@ -537,6 +548,9 @@ def parse_inline_statement(p: Parser) -> Code:
       eat(p, TokenKind.KW_as)
       alias = eat(p, TokenKind.IDENTIFIER).as_str(p.src)
     return Code_Import(token.location, p.pos, is_local, path, alias)
+  elif peek(p).kind == TokenKind.KW_pass:
+    token = eat(p, TokenKind.KW_pass)
+    return Code_Pass(token.location, token.location + token.length)
   else:
     result = parse_expression(p)
     if ASSIGN_OPS[peek(p).kind]:
@@ -563,12 +577,13 @@ def parse_block_statement_or_line(p: Parser) -> list[Code]:
     token = eat(p, TokenKind.KW_def)
     name = eat(p, TokenKind.IDENTIFIER).as_str(p.src)
     parameters: list[Code] = []
-    eat(p, ord('('))
+    is_brackets = peek(p).kind == ord('[')
+    eat(p, ord('[') if is_brackets else ord('('))
     p.parens += 1
-    while peek(p).kind != ord(')'):
+    while peek(p).kind != (ord(']') if is_brackets else ord(')')):
       parameters.append(parse_declaration(p))
     p.parens -= 1
-    eat(p, ord(')'))
+    eat(p, ord(']') if is_brackets else ord(')'))
     return_type: Code | None = None
     if peek(p).kind == TokenKind.DASHGT:
       eat(p, TokenKind.DASHGT)
@@ -577,7 +592,7 @@ def parse_block_statement_or_line(p: Parser) -> list[Code]:
     if peek(p).kind != ord(':'):
       attributes = parse_expression(p)
     body = parse_block(p)
-    result = [Code_Procedure(token.location, p.pos, is_nonlocal, name, parameters, return_type, attributes, body)]
+    result = [Code_Procedure(token.location, p.pos, is_nonlocal, name, is_brackets, parameters, return_type, attributes, body)]
   elif peek(p).kind == TokenKind.KW_yield and peek(p, 2).kind == ord(':'):
     token = eat(p, TokenKind.KW_yield)
     body = parse_block(p)
@@ -596,10 +611,10 @@ def parse_block_statement_or_line(p: Parser) -> list[Code]:
       condition = parse_expression(p)
     body = parse_block(p)
     result = [Code_Case(token.location, p.pos, condition, body)]
-  elif peek(p).kind == TokenKind.KW_finally:
+  elif peek(p, n).kind == TokenKind.KW_finally:
     token = eat(p, TokenKind.KW_finally)
     body = parse_block(p)
-    result = [Code_Finally(token.location, p.pos, body)]
+    result = [Code_Finally(token.location, p.pos, is_nonlocal, body)]
   elif peek(p).kind in [TokenKind.KW_if, TokenKind.KW_elif]:
     token = eat(p, peek(p).kind)
     condition = parse_expression(p)
@@ -675,7 +690,7 @@ def code_as_string(s: str, code: Code, level: int = 0) -> str:
     if code.value_expr: result += f" = {code_as_string(s, code.value_expr, level)}"
     return result
   elif isinstance(code, Code_Procedure):
-    return f"{"nonlocal " if code.is_nonlocal else ""}def {code.name}({", ".join(code_as_string(s, parameter, level) for parameter in code.parameters)}){f" -> {code_as_string(s, code.return_type, level)}" if code.return_type else ""}{code_block_as_string(s, code.body, level)}"
+    return f"{"nonlocal " if code.is_nonlocal else ""}def {code.name}{"[" if code.is_brackets else "("}{", ".join(code_as_string(s, parameter, level) for parameter in code.parameters)}{"]" if code.is_brackets else ")"}{f" -> {code_as_string(s, code.return_type, level)}" if code.return_type else ""}{code_block_as_string(s, code.body, level)}"
   elif isinstance(code, Code_UnaryOp):
     wrap = isinstance(code.right, Code_BinaryOp)
     space = code.op.as_str(s) == "not"
@@ -699,6 +714,8 @@ def code_as_string(s: str, code: Code, level: int = 0) -> str:
     return f"import {"." if code.is_local else ""}{".".join(code.path)}{f" as {code.alias}" if code.alias else ""}"
   elif isinstance(code, Code_ImportFrom):
     return f"from {"." if code.is_local else ""}{".".join(code.path)} import {f"*{" except " + ", ".join(code.excludes) if len(code.excludes) > 0 else ""}" if len(code.includes) == 0 else ", ".join(f"{name}{f" as {alias}" if alias else ""}" for name, alias in zip(code.includes, code.aliases))}"
+  elif isinstance(code, Code_In):
+    return f"{"nonlocal " if code.is_nonlocal else ""}in {code_as_string(s, code.expression, level)}"
   elif isinstance(code, Code_Assert):
     return f"assert {code_as_string(s, code.condition, level)}{f", {code_as_string(s, code.message, level)}" if code.message else ""}"
   elif isinstance(code, Code_Match):
@@ -708,7 +725,9 @@ def code_as_string(s: str, code: Code, level: int = 0) -> str:
   elif isinstance(code, Code_Yield):
     return f"yield{code_block_as_string(src, code.body, level)}"
   elif isinstance(code, Code_Finally):
-    return f"finally{code_block_as_string(s, code.body, level)}"
+    return f"{"nonlocal " if code.is_nonlocal else ""}finally{code_block_as_string(s, code.body, level)}"
+  elif isinstance(code, Code_Pass):
+    return "pass"
   elif isinstance(code, Code_If):
     return f"if {code_as_string(s, code.condition, level)}{code_block_as_string(s, code.consequence, level)}{f"else{code_block_as_string(s, code.alt, level)}" if len(code.alt) else ""}"
   else:
